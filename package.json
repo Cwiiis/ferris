@@ -1,0 +1,13 @@
+{
+  "name": "ferris",
+  "version": "0.0.1",
+  "description": "Party companion",
+  "author": "Chris Lord",
+  "main": "index.js",
+  "dependencies": {
+    "pocketsphinx": "5.0.5",
+    "mic": "2.0.1",
+    "concat-stream": "1.5.1",
+    "request-promise": "^1.0.2"
+  }
+}
