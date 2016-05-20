@@ -1,4 +1,5 @@
 var concat = require('concat-stream');
+var ChildProcess = require('child_process');
 var Fs = require('fs');
 var Mic = require('mic');
 var Path = require('path');
@@ -81,14 +82,41 @@ function createEvent(type) {
   };
 }
 
+function say(text) {
+  // XXX The async version segfaults on command complete
+  ChildProcess.execFileSync('espeak', ['-m', text]);
+}
+
 function createContext(skill) {
   return {
     fail: e => {
       console.error('Event failed', e);
     },
     succeed: o => {
-      console.log('Event succeeded', o);
-      if (o && o.response.outputSpeech.shouldEndSession) {
+      console.log('Event succeeded');
+      if (!o) {
+        return;
+      }
+
+      console.log('Output:', o);
+
+      var speech = o.response.outputSpeech;
+      if (speech) {
+        switch (speech.type) {
+          case 'SSML':
+            say(speech.ssml);
+            break;
+
+          case 'PlainText':
+            say(speech.text);
+            break;
+
+          default:
+            console.warn('Unrecognised speech type: ' + speech.type);
+        }
+      }
+
+      if (o.response.shouldEndSession) {
         endSession(skill);
       }
     }
