@@ -1,9 +1,9 @@
-var concat = require('concat-stream');
-var ChildProcess = require('child_process');
-var Fs = require('fs');
-var Mic = require('mic');
-var Path = require('path');
-var Prompt = require('prompt-sync')();
+const Concat = require('concat-stream');
+const ChildProcess = require('child_process');
+const Fs = require('fs');
+const Mic = require('mic');
+const Path = require('path');
+const Readline = require('readline');
 
 var skillsPath = Path.join(__dirname, 'skills');
 
@@ -82,9 +82,17 @@ function createEvent(type) {
   };
 }
 
+var speechProcess = null;
 function say(text) {
-  // XXX The async version segfaults on command complete
-  ChildProcess.execFileSync('espeak', ['-m', text]);
+  if (speechProcess) {
+    speechProcess.kill('SIGINT');
+  }
+
+  speechProcess = ChildProcess.execFile('espeak', ['-m', text]);
+
+  speechProcess.on('exit', () => {
+    speechProcess = null;
+  });
 }
 
 function createContext(skill) {
@@ -169,18 +177,20 @@ var skills = loadSkills();
 // Provide a user prompt
 var activeSkill = null;
 var quit = false;
-while (true) {
-  var string = Prompt('> ');
-  if (!string) {
-    break;
-  }
 
-  var matched = false;
-  var command = normaliseString(string);
+var rl = Readline.createInterface({
+  input: process.stdin,
+  output: process.stdout
+});
+
+rl.on('line', command => {
+  rl.pause();
+  command = normaliseString(command);
+
   switch (command.replace(/ .*$/, '')) {
     case 'exit':
     case 'quit':
-      quit = true;
+      rl.close();
       break;
 
     case 'help':
@@ -189,6 +199,7 @@ while (true) {
       break;
 
     case 'launch':
+      var matched = false;
       for (var skill of skills) {
         if (command.replace(/launch /, '') === normaliseString(skill.name)) {
           if (activeSkill !== skill) {
@@ -228,28 +239,27 @@ while (true) {
               if (!activeSkill.context) {
                 activeSkill = null;
               }
-              matched = true;
-              break;
+              rl.prompt();
+              return;
             }
-          }
-          if (matched) {
-            break;
           }
         }
       }
-      if (!matched) {
-        console.log('Command unrecognised');
-      }
+      console.log('Command unrecognised');
       break;
   }
 
-  if (quit) {
-    break;
+  // Unpause and refresh the prompt
+  rl.prompt();
+}).on('close', () => {
+  // Clean-up
+  if (activeSkill) {
+    endSession(activeSkill);
+    activeSkill = null;
   }
-}
 
-// Clean-up
-if (activeSkill) {
-  endSession(activeSkill);
-  activeSkill = null;
-}
+  process.exit(0);
+});
+
+rl.prompt();
+
