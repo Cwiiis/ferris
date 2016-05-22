@@ -69,6 +69,7 @@ var sessionId = 'DefaultSession';
 
 function createEvent(type) {
   return {
+    version: '1.0',
     session: {
       sessionId: sessionId,
       application: {
@@ -77,7 +78,8 @@ function createEvent(type) {
     },
     request: {
       requestId: requestId++,
-      type: type
+      type: type,
+      timestamp: Date.now()
     }
   };
 }
