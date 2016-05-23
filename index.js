@@ -7,6 +7,26 @@ const Readline = require('readline');
 
 var skillsPath = Path.join(__dirname, 'skills');
 
+function matchSlot(skill, intent, slotName, text) {
+  if (!intent.slots) {
+    return null;
+  }
+
+  // Check custom slots
+  if (intent.slots[slotName]) {
+    var slotType = intent.slots[slotName];
+
+    if (skill.customSlots[slotType]) {
+      for (var utterance of skill.customSlots[slotType]) {
+        if (utterance.localeCompare(text) === 0) {
+          return utterance;
+        }
+      }
+    }
+  }
+  return null;
+}
+
 function loadSkills() {
   var skills = [];
   Fs.readdirSync(skillsPath).forEach(path => {
@@ -246,6 +266,70 @@ var rl = Readline.createInterface({
   output: process.stdout
 });
 
+function checkMatch(skill, intent, input) {
+  if (!intent.utterances) {
+    return null;
+  }
+
+  // TODO: Investigate using nlp for fuzzy matching of utterances?
+
+  for (var utterance of intent.utterances) {
+    var split = utterance.split(/({[^}]*})/);
+    // Fast-path
+    if (!intent.slots || split.length <= 1) {
+      if (utterance.localeCompare(input) == 0) {
+        return {};
+      }
+      continue;
+    }
+
+    // Match the non-slot parts of the utterance to extract the parts that
+    // should apply to slots.
+    var index = 0;
+    var slotMatch = input;
+    var slots = [];
+    for (var substring of split) {
+      if (substring.startsWith('{') && substring.endsWith('}')) {
+        slots.push(substring.slice(1, -1));
+        continue;
+      }
+
+      var substringIndex = input.indexOf(substring, index);
+      if (substringIndex !== -1) {
+        input =
+          input.slice(0, index) + input.slice(index).replace(substring, '');
+      } else {
+        index += substring.length;
+      }
+    }
+
+    // Now try to match slots with the rest of the string
+    var result = {};
+    var splitInput = input.split(' ');
+    for (var slot of slots) {
+      // Iteratively increase the amount of the string we try to match to a
+      // slot.
+      var matchString = '';
+      for (var i = 0; i < splitInput.length; i++) {
+        matchString += splitInput[i];
+        result[slot] = matchSlot(skill, intent, slot,
+                                 normaliseString(matchString));
+        if (result[slot]) {
+          splitInput.splice(0, i + 1);
+          break;
+        }
+      }
+      if (!result[slot]) {
+        return null;
+      }
+    }
+
+    return result;
+  }
+
+  return null;
+}
+
 rl.on('line', command => {
   rl.pause();
   command = normaliseString(command);
@@ -295,16 +379,15 @@ rl.on('line', command => {
     default:
       if (activeSkill) {
         for (var intent in activeSkill.intents) {
-          for (var utterance of activeSkill.intents[intent].utterances) {
-            // TODO: Investigate using nlp for fuzzy matching?
-            if (utterance.localeCompare(command) == 0) {
-              launch(activeSkill, intent);
-              if (!activeSkill.context) {
-                activeSkill = null;
-              }
-              rl.prompt();
-              return;
+          var result = checkMatch(activeSkill, activeSkill.intents[intent],
+                                  command);
+          if (result) {
+            launch(activeSkill, intent);
+            if (!activeSkill.context) {
+              activeSkill = null;
             }
+            rl.prompt();
+            return;
           }
         }
       }
