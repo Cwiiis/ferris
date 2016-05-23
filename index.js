@@ -66,15 +66,16 @@ function loadSkills() {
 
 var requestId = 0;
 var sessionId = 'DefaultSession';
+var sessionAttributes = {};
 
-function createEvent(type) {
+function createEvent(type, attributes) {
   return {
     version: '1.0',
     session: {
       sessionId: sessionId,
       application: {
       },
-      new: true
+      attributes: sessionAttributes
     },
     request: {
       requestId: requestId++,
@@ -137,6 +138,7 @@ function startSession(skill, id) {
   if (id) {
     sessionId = id;
   }
+  sessionAttributes = {};
 
   skill.context = createContext(skill);
   var event = createEvent('LaunchRequest');
