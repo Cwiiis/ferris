@@ -2,6 +2,7 @@ const Concat = require('concat-stream');
 const ChildProcess = require('child_process');
 const Fs = require('fs');
 const Mic = require('mic');
+const Nlp = require('nlp_compromise');
 const Path = require('path');
 const Readline = require('readline');
 
@@ -12,10 +13,10 @@ function matchSlot(skill, intent, slotName, text) {
     return null;
   }
 
-  // Check custom slots
   if (intent.slots[slotName]) {
     var slotType = intent.slots[slotName];
 
+    // Check custom slots
     if (skill.customSlots[slotType]) {
       for (var utterance of skill.customSlots[slotType]) {
         if (utterance.localeCompare(text) === 0) {
@@ -23,7 +24,88 @@ function matchSlot(skill, intent, slotName, text) {
         }
       }
     }
+
+    // Check built-in slots
+    if (slotType.startsWith('AMAZON.')) {
+      switch(slotType) {
+        case 'AMAZON.DATE':
+          var date = Nlp.date(text);
+          console.log(date);
+
+          // TODO: Surprising nlp doesn't support this, see about adding it.
+          //       It also doesn't seem to support durations, or have a concept
+          //       about week-ends.
+          if (date.normal === 'today' ||
+              date.normal === 'now') {
+            return new Date().toDateString();
+          }
+
+          // Don't return a partial date if we have no information at all
+          if (date.data.year === null &&
+              date.data.month === null &&
+              date.data.day === null) {
+            break;
+          }
+
+          // Assume this year if none specified
+          var dateString = '' + (date.data.year ? date.data.year :
+            new Date().getFullYear());
+
+          if (date.data.month) {
+            dateString += '-' + (date.data.month + 1);
+
+            if (date.data.day) {
+              dateString += '-' + date.data.day;
+            }
+          }
+
+          return dateString;
+
+        case 'AMAZON.DURATION':
+          // TODO: nlp doesn't have a 'duration' concept, see about adding it.
+          break;
+
+        case 'AMAZON.FOUR_DIGIT_NUMBER':
+          break;
+
+        case 'AMAZON.NUMBER':
+          var value = Nlp.value(text);
+          if (Number.isFinite(value.number)) {
+            return value.number;
+          }
+          break;
+
+        case 'AMAZON.TIME':
+          var date = Nlp.date(text);
+
+          // TODO: Surprising nlp doesn't support this, see about adding it.
+          //       It also doesn't seem to support durations, or have a concept
+          //       about week-ends.
+          if (date.normal === 'today' ||
+              date.normal === 'now') {
+            return new Date().toTimeString().slice(0, 5);
+          }
+
+          // TODO: nlp doesn't seem to have any concept of time either?
+
+          break;
+
+        // TODO: nlp has very few cities and no states
+        case 'AMAZON.US_CITY':
+          return Nlp.place(text).city;
+
+        case 'AMAZON.US_FIRST_NAME':
+          return Nlp.person(text).firstName;
+
+        case 'AMAZON.US_STATE':
+          return Nlp.place(text).region;
+
+        case 'AMAZON.LITERAL':
+          return text;
+      }
+    }
   }
+
   return null;
 }
 
@@ -151,11 +233,14 @@ function createEvent(type, attributes) {
 }
 
 var speechProcess = null;
-function say(text) {
+function quiet() {
   if (speechProcess) {
     speechProcess.kill('SIGINT');
   }
+}
 
+function say(text) {
+  quiet();
   speechProcess = ChildProcess.execFile('espeak', ['-m', text]);
 
   speechProcess.on('exit', () => {
@@ -218,9 +303,9 @@ function endSession(skill) {
   delete skill.context;
 }
 
-function launch(skill, intent) {
+function launch(skill, intent, slots) {
   var event = createEvent('IntentRequest');
-  event.request.intent = { name: intent, slots: {} };
+  event.request.intent = { name: intent, slots: slots ? slots : {} };
   skill.module.handler(event, skill.context);
 }
 
@@ -286,42 +371,67 @@ function checkMatch(skill, intent, input) {
     // Match the non-slot parts of the utterance to extract the parts that
     // should apply to slots.
     var index = 0;
-    var slotMatch = input;
     var slots = [];
+    var lastMatch = null;
+    var badMatch = false;
     for (var substring of split) {
+      if (substring === '') {
+        continue;
+      }
       if (substring.startsWith('{') && substring.endsWith('}')) {
-        slots.push(substring.slice(1, -1));
+        lastMatch = { name: substring.slice(1, -1),
+                      text: '' };
+        slots.push(lastMatch);
         continue;
       }
 
       var substringIndex = input.indexOf(substring, index);
       if (substringIndex !== -1) {
-        input =
-          input.slice(0, index) + input.slice(index).replace(substring, '');
+        if (lastMatch) {
+          lastMatch.text = input.slice(index, substringIndex);
+        }
+        index = substringIndex + substring.length;
+        lastMatch = null;
       } else {
-        index += substring.length;
+        // A part of the utterance didn't match
+        badMatch = true;
+        break;
       }
+    }
+
+    if (badMatch) {
+      continue;
+    }
+
+    if (lastMatch) {
+      lastMatch.text = input.slice(index);
     }
 
     // Now try to match slots with the rest of the string
     var result = {};
-    var splitInput = input.split(' ');
-    for (var slot of slots) {
-      // Iteratively increase the amount of the string we try to match to a
-      // slot.
-      var matchString = '';
-      for (var i = 0; i < splitInput.length; i++) {
-        matchString += splitInput[i];
-        result[slot] = matchSlot(skill, intent, slot,
-                                 normaliseString(matchString));
-        if (result[slot]) {
-          splitInput.splice(0, i + 1);
+    for (var slotMatch of slots) {
+      // Greedily match the string
+      var words = slotMatch.text.split(' ');
+      for (var i = words.length; i > 0; i--) {
+        var matchString = words[0];
+        for (var j = 1; j < i; j++) {
+          matchString += ' ' + words[j];
+        }
+        var value = matchSlot(skill, intent, slotMatch.name,
+                              normaliseString(matchString));
+        if (value !== null) {
+          result[slotMatch.name] = { value: value };
           break;
         }
       }
-      if (!result[slot]) {
-        return null;
+      if (!result[slotMatch.name]) {
+        badMatch = true;
+        break;
       }
+    }
+
+    if (badMatch) {
+      continue;
     }
 
     return result;
@@ -382,7 +492,7 @@ rl.on('line', command => {
           var result = checkMatch(activeSkill, activeSkill.intents[intent],
                                   command);
           if (result) {
-            launch(activeSkill, intent);
+            launch(activeSkill, intent, result);
             if (!activeSkill.context) {
               activeSkill = null;
             }
@@ -399,6 +509,7 @@ rl.on('line', command => {
   rl.prompt();
 }).on('close', () => {
   // Clean-up
+  quiet();
   if (activeSkill) {
     endSession(activeSkill);
     activeSkill = null;
