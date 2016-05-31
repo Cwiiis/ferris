@@ -4,112 +4,12 @@ const Fs = require('fs');
 const Mic = require('mic');
 const Nlp = require('nlp_compromise');
 const Path = require('path');
+const PocketSphinx = require('pocketsphinx').ps;
 const Readline = require('readline');
 
-var skillsPath = Path.join(__dirname, 'skills');
-
-function matchSlot(skill, intent, slotName, text) {
-  if (!intent.slots) {
-    return null;
-  }
-
-  if (intent.slots[slotName]) {
-    var slotType = intent.slots[slotName];
-
-    // Check custom slots
-    if (skill.customSlots[slotType]) {
-      for (var utterance of skill.customSlots[slotType]) {
-        if (utterance.localeCompare(text) === 0) {
-          return utterance;
-        }
-      }
-    }
-
-    // Check built-in slots
-    if (slotType.startsWith('AMAZON.')) {
-      switch(slotType) {
-        case 'AMAZON.DATE':
-          var date = Nlp.date(text);
-          console.log(date);
-
-          // TODO: Surprising nlp doesn't support this, see about adding it.
-          //       It also doesn't seem to support durations, or have a concept
-          //       about week-ends.
-          if (date.normal === 'today' ||
-              date.normal === 'now') {
-            return new Date().toDateString();
-          }
-
-          // Don't return a partial date if we have no information at all
-          if (date.data.year === null &&
-              date.data.month === null &&
-              date.data.day === null) {
-            break;
-          }
-
-          // Assume this year if none specified
-          var dateString = '' + (date.data.year ? date.data.year :
-            new Date().getFullYear());
-
-          if (date.data.month) {
-            dateString += '-' + (date.data.month + 1);
-
-            if (date.data.day) {
-              dateString += '-' + date.data.day;
-            }
-          }
-
-          return dateString;
-
-        case 'AMAZON.DURATION':
-          // TODO: nlp doesn't have a 'duration' concept, see about adding it.
-          break;
-
-        case 'AMAZON.FOUR_DIGIT_NUMBER':
-          break;
-
-        case 'AMAZON.NUMBER':
-          var value = Nlp.value(text);
-          if (Number.isFinite(value.number)) {
-            return value.number;
-          }
-          break;
-
-        case 'AMAZON.TIME':
-          var date = Nlp.date(text);
-
-          // TODO: Surprising nlp doesn't support this, see about adding it.
-          //       It also doesn't seem to support durations, or have a concept
-          //       about week-ends.
-          if (date.normal === 'today' ||
-              date.normal === 'now') {
-            return new Date().toTimeString().slice(0, 5);
-          }
-
-          // TODO: nlp doesn't seem to have any concept of time either?
-
-          break;
-
-        // TODO: nlp has very few cities and no states
-        case 'AMAZON.US_CITY':
-          return Nlp.place(text).city;
-
-        case 'AMAZON.US_FIRST_NAME':
-          return Nlp.person(text).firstName;
-
-        case 'AMAZON.US_STATE':
-          return Nlp.place(text).region;
-
-        case 'AMAZON.LITERAL':
-          return text;
-      }
-    }
-  }
-
-  return null;
-}
-
+// Load kills
 function loadSkills() {
+  var skillsPath = Path.join(__dirname, 'skills');
   var skills = [];
   Fs.readdirSync(skillsPath).forEach(path => {
     // Check that this is a directory and not a file
@@ -214,7 +114,6 @@ function loadSkills() {
 var requestId = 0;
 var sessionId = 'DefaultSession';
 var sessionAttributes = {};
-
 function createEvent(type, attributes) {
   return {
     version: '1.0',
@@ -309,7 +208,7 @@ function launch(skill, intent, slots) {
   skill.module.handler(event, skill.context);
 }
 
-function listSkills() {
+function listSkills(skills) {
   for (var skill of skills) {
     console.log('Skill \'' + skill.name + '\'');
     for (var intent in skill.intents) {
@@ -339,19 +238,113 @@ function normaliseString(string) {
   return string.replace(/ +/, ' ').toLocaleLowerCase().trim();
 }
 
-// Load skills
-var skills = loadSkills();
+function normaliseCamelCase(string) {
+  return normaliseString(string.replace(/([A-Z])/, ' $1'));
+}
 
-// Provide a user prompt
-var activeSkill = null;
-var quit = false;
+// Translate input text with a particular matched skill/intent with slot output
+function matchSlot(skill, intent, slotName, text) {
+  if (!intent.slots) {
+    return null;
+  }
 
-var rl = Readline.createInterface({
-  input: process.stdin,
-  output: process.stdout
-});
+  if (intent.slots[slotName]) {
+    var slotType = intent.slots[slotName];
 
-function checkMatch(skill, intent, input) {
+    // Check custom slots
+    if (skill.customSlots[slotType]) {
+      for (var utterance of skill.customSlots[slotType]) {
+        if (utterance.localeCompare(text) === 0) {
+          return utterance;
+        }
+      }
+    }
+
+    // Check built-in slots
+    if (slotType.startsWith('AMAZON.')) {
+      switch(slotType) {
+        case 'AMAZON.DATE':
+          var date = Nlp.date(text);
+          console.log(date);
+
+          // TODO: Surprising nlp doesn't support this, see about adding it.
+          //       It also doesn't seem to support durations, or have a concept
+          //       about week-ends.
+          if (date.normal === 'today' ||
+              date.normal === 'now') {
+            return new Date().toDateString();
+          }
+
+          // Don't return a partial date if we have no information at all
+          if (date.data.year === null &&
+              date.data.month === null &&
+              date.data.day === null) {
+            break;
+          }
+
+          // Assume this year if none specified
+          var dateString = '' + (date.data.year ? date.data.year :
+            new Date().getFullYear());
+
+          if (date.data.month) {
+            dateString += '-' + (date.data.month + 1);
+
+            if (date.data.day) {
+              dateString += '-' + date.data.day;
+            }
+          }
+
+          return dateString;
+
+        case 'AMAZON.DURATION':
+          // TODO: nlp doesn't have a 'duration' concept, see about adding it.
+          break;
+
+        case 'AMAZON.FOUR_DIGIT_NUMBER':
+          break;
+
+        case 'AMAZON.NUMBER':
+          var value = Nlp.value(text);
+          if (Number.isFinite(value.number)) {
+            return value.number;
+          }
+          break;
+
+        case 'AMAZON.TIME':
+          var date = Nlp.date(text);
+
+          // TODO: Surprising nlp doesn't support this, see about adding it.
+          //       It also doesn't seem to support durations, or have a concept
+          //       about week-ends.
+          if (date.normal === 'today' ||
+              date.normal === 'now') {
+            return new Date().toTimeString().slice(0, 5);
+          }
+
+          // TODO: nlp doesn't seem to have any concept of time either?
+
+          break;
+
+        // TODO: nlp has very few cities and no states
+        case 'AMAZON.US_CITY':
+          return Nlp.place(text).city;
+
+        case 'AMAZON.US_FIRST_NAME':
+          return Nlp.person(text).firstName;
+
+        case 'AMAZON.US_STATE':
+          return Nlp.place(text).region;
+
+        case 'AMAZON.LITERAL':
+          return text;
+      }
+    }
+  }
+
+  return null;
+}
+
+function matchIntent(skill, intent, input) {
   if (!intent.utterances) {
     return null;
   }
@@ -440,28 +433,133 @@ function checkMatch(skill, intent, input) {
   return null;
 }
 
-rl.on('line', command => {
-  rl.pause();
+function buildGrammar(skills, activeSkills) {
+  var grammar = '#JSGF V1.0;\ngrammar ferris;\n\n';
+
+  // Add grammar for built-in slots
+
+  // Add grammar for built-in commands
+  grammar +=
+    '<ferris.command> = exit | quit | help | list | grammar | stop ;\n';
+
+  // Add grammar for launching skills
+  if (skills.length > 0 ) {
+    grammar += '<ferris.launcher> = ';
+    for (var skill of skills) {
+      grammar += `launch ${normaliseCamelCase(skill.name)} | `;
+    }
+    grammar = grammar.slice(0, -2) + ';\n';
+  }
+
+  // Add grammar for given array of skills
+  for (var skill of activeSkills) {
+    if (!skill) {
+      continue;
+    }
+
+    grammar += '\n';
+
+    // Add grammar for custom slots
+    if (skill.customSlots) {
+      for (var slotName in skill.customSlots) {
+        if (skill.customSlots[slotName].length <= 0) {
+          continue;
+        }
+
+        var slotGrammar = `<${skill.name}.${slotName}> = `;
+        for (var slotText of skill.customSlots[slotName]) {
+          slotGrammar += `${normaliseString(slotText)} | `;
+        }
+        grammar += slotGrammar.slice(0, -2) + ';\n';
+      }
+    }
+
+    // Add grammar for intents
+    for (var intentName in skill.intents) {
+      var intent = skill.intents[intentName];
+      if (!intent.utterances || intent.utterances.length <= 0) {
+        continue;
+      }
+
+      var intentGrammars = `<${skill.name}.${intentName}> = `;
+      for (var utterance of intent.utterances) {
+        intentGrammar = utterance;
+
+        for (var slotName in intent.slots) {
+          intentGrammar = intentGrammar.replace(new RegExp(`{${slotName}}`),
+            `<${skill.name}.${intent.slots[slotName]}>`);
+        }
+
+        if (!intent.slots) {
+          intentGrammar = normaliseString(utterance);
+        } else {
+          // Normalise the parts of the string between slots
+          var split = intentGrammar.split(/ *<[^>]*> */);
+          var slots = intentGrammar.match(/<[^>]*>/g);
+          var normalised = '';
+          for (var word of split) {
+            normalised += `${normaliseString(word)} `;
+            var slot = slots.shift();
+            if (slot) {
+              normalised += `${slot} `;
+            }
+          }
+          intentGrammar = normalised.slice(0, -1);
+        }
+
+        intentGrammars += `${intentGrammar} | `;
+      }
+      grammar += intentGrammars.slice(0, -2) + ';\n';
+    }
+  }
+
+  // Build the public rule
+  grammar += '\npublic <ferris.input> = <ferris.command> | <ferris.launcher>';
+  for (var skill of activeSkills) {
+    if (!skill) {
+      continue;
+    }
+
+    for (var intentName in skill.intents) {
+      var intent = skill.intents[intentName];
+      if (!intent.utterances || intent.utterances.length <= 0) {
+        continue;
+      }
+
+      grammar += ` | <${skill.name}.${intentName}>`;
+    }
+  }
+  grammar += ' ;\n';
+
+  return grammar;
+}
+
+function parseCommand(command, onexit) {
   command = normaliseString(command);
 
   switch (command.replace(/ .*$/, '')) {
     case 'exit':
     case 'quit':
-      rl.close();
+      if (onexit) {
+        onexit();
+      }
       break;
 
     case 'help':
     case 'list':
-      listSkills();
+      listSkills(skills);
       break;
 
     case 'launch':
       var matched = false;
       for (var skill of skills) {
-        if (command.replace(/launch /, '') === normaliseString(skill.name)) {
+        var skillName = command.replace(/launch /, '');
+        if (skillName === normaliseString(skill.name) ||
+            skillName === normaliseCamelCase(skill.name)) {
           if (activeSkill !== skill) {
             if (activeSkill) {
               endSession(activeSkill);
+              activeSkill = null;
             }
             startSession(skill);
             if (skill.context) {
@@ -477,6 +575,10 @@ rl.on('line', command => {
       }
       break;
 
+    case 'grammar':
+      console.log(buildGrammar(skills, [activeSkill]));
+      break;
+
     case 'stop':
       if (activeSkill) {
         endSession(activeSkill);
@@ -489,14 +591,13 @@ rl.on('line', command => {
     default:
       if (activeSkill) {
         for (var intent in activeSkill.intents) {
-          var result = checkMatch(activeSkill, activeSkill.intents[intent],
-                                  command);
+          var result = matchIntent(activeSkill, activeSkill.intents[intent],
+                                   command);
           if (result) {
             launch(activeSkill, intent, result);
             if (!activeSkill.context) {
               activeSkill = null;
             }
-            rl.prompt();
             return;
           }
         }
@@ -504,6 +605,24 @@ rl.on('line', command => {
       console.log('Command unrecognised');
       break;
   }
+}
+
+// Load skills
+var skills = loadSkills();
+
+// Provide a user prompt
+var activeSkill = null;
+var quit = false;
+
+var rl = Readline.createInterface({
+  input: process.stdin,
+  output: process.stdout
+});
+
+rl.on('line', command => {
+  rl.pause();
+
+  parseCommand(command, () => { rl.close(); });
 
   // Unpause and refresh the prompt
   rl.prompt();
