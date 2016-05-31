@@ -6,6 +6,7 @@ const Nlp = require('nlp_compromise');
 const Path = require('path');
 const PocketSphinx = require('pocketsphinx').ps;
 const Readline = require('readline');
+const Which = require('which');
 
 // Load kills
 function loadSkills() {
@@ -433,22 +434,56 @@ function matchIntent(skill, intent, input) {
   return null;
 }
 
-function buildGrammar(skills, activeSkills) {
+function lookupWords(string, decoder) {
+  if (!decoder) {
+    return true;
+  }
+
+  var wordsNotFound = [];
+  for (var word of string.split(' ')) {
+    if (word.length <= 0) {
+      continue;
+    }
+    if (!decoder.lookupWord(word)) {
+      wordsNotFound.push(word);
+    }
+  }
+
+  if (wordsNotFound.length > 0) {
+    console.warn(`String '${string}' contains words not in dictionary:`);
+    for (var word of wordsNotFound) {
+      console.warn('\t' + word);
+    }
+    return false;
+  }
+
+  return true;
+}
+
+function buildGrammar(skills, activeSkills, decoder) {
   var grammar = '#JSGF V1.0;\ngrammar ferris;\n\n';
 
-  // Add grammar for built-in slots
+  // TODO: Add grammar for built-in slots
 
   // Add grammar for built-in commands
   grammar +=
     '<ferris.command> = exit | quit | help | list | grammar | stop ;\n';
 
   // Add grammar for launching skills
-  if (skills.length > 0 ) {
-    grammar += '<ferris.launcher> = ';
-    for (var skill of skills) {
-      grammar += `launch ${normaliseCamelCase(skill.name)} | `;
+  var foundSkill = false;
+  var skillGrammar = '<ferris.launcher> = ';
+  for (var skill of skills) {
+    var normalised = normaliseCamelCase(skill.name);
+
+    if (!lookupWords(normalised, decoder)) {
+      continue;
     }
-    grammar = grammar.slice(0, -2) + ';\n';
+
+    skillGrammar += `launch ${normalised} | `;
+    foundSkill = true;
+  }
+  if (foundSkill) {
+    grammar += skillGrammar.slice(0, -2) + ';\n';
   }
 
   // Add grammar for given array of skills
@@ -466,11 +501,22 @@ function buildGrammar(skills, activeSkills) {
           continue;
         }
 
+        var foundSlot = false;
         var slotGrammar = `<${skill.name}.${slotName}> = `;
         for (var slotText of skill.customSlots[slotName]) {
-          slotGrammar += `${normaliseString(slotText)} | `;
+          var normalised = normaliseString(slotText);
+
+          // Verify the string is ok with the current dictionary
+          if (!lookupWords(normalised, decoder)) {
+            continue;
+          }
+
+          slotGrammar += `${normalised} | `;
+          foundSlot = true;
         }
-        grammar += slotGrammar.slice(0, -2) + ';\n';
+        if (foundSlot) {
+          grammar += slotGrammar.slice(0, -2) + ';\n';
+        }
       }
     }
 
@@ -490,23 +536,33 @@ function buildGrammar(skills, activeSkills) {
             `<${skill.name}.${intent.slots[slotName]}>`);
         }
 
-        if (!intent.slots) {
-          intentGrammar = normaliseString(utterance);
-        } else {
-          // Normalise the parts of the string between slots
-          var split = intentGrammar.split(/ *<[^>]*> */);
-          var slots = intentGrammar.match(/<[^>]*>/g);
-          var normalised = '';
-          for (var word of split) {
-            normalised += `${normaliseString(word)} `;
+        // Normalise the parts of the string between slots
+        var valid = true;
+        var split = intentGrammar.split(/ *<[^>]*> */);
+        var slots = intentGrammar.match(/<[^>]*>/g);
+        var normalised = '';
+        for (var word of split) {
+          word = normaliseString(word);
+
+          if (!lookupWords(word, decoder)) {
+            valid = false;
+          }
+
+          normalised += `${word} `;
+
+          if (slots) {
             var slot = slots.shift();
             if (slot) {
               normalised += `${slot} `;
             }
           }
-          intentGrammar = normalised.slice(0, -1);
         }
 
+        if (!valid) {
+          continue;
+        }
+
+        intentGrammar = normalised.slice(0, -1);
         intentGrammars += `${intentGrammar} | `;
       }
       grammar += intentGrammars.slice(0, -2) + ';\n';
@@ -534,6 +590,7 @@ function buildGrammar(skills, activeSkills) {
   return grammar;
 }
 
+var activeSkill = null;
 function parseCommand(command, onexit) {
   command = normaliseString(command);
 
@@ -576,7 +633,7 @@ function parseCommand(command, onexit) {
       break;
 
     case 'grammar':
-      console.log(buildGrammar(skills, [activeSkill]));
+      console.log(buildGrammar(skills, [activeSkill], decoder));
       break;
 
     case 'stop':
@@ -610,10 +667,48 @@ function parseCommand(command, onexit) {
 // Load skills
 var skills = loadSkills();
 
-// Provide a user prompt
-var activeSkill = null;
-var quit = false;
+// Provide speech input
+var decoder = null;
 
+function refreshGrammar() {
+  if (!decoder) {
+    return;
+  }
+
+  var grammar = buildGrammar(skills, [activeSkill], decoder);
+  decoder.setJsgfString('ferris', grammar);
+}
+
+function listen() {
+  // Not happy about needing to do this. Running pocketsphinx from the
+  // command-line finds the default models automatically.
+  Which('pocketsphinx_continuous', (e, path) => {
+    if (e) {
+      console.error('Error searching for pocketsphinx', e);
+      return;
+    }
+
+    path = Path.join(Path.dirname(path), '..', 'share',
+                     'pocketsphinx', 'model', 'en-us');
+    if (!Fs.statSync(path).isDirectory()) {
+      console.error('Pocketsphinx en-us model not found at ' + path);
+      return;
+    }
+
+    var config = PocketSphinx.Decoder.defaultConfig();
+    config.setString("-hmm", Path.join(path, 'en-us'));
+    config.setString("-dict", Path.join(path, 'cmudict-en-us.dict'));
+    config.setString("-lm", Path.join(path, 'en-us.lm.bin'));
+    config.setString('-logfn', '/dev/null');
+
+    decoder = new PocketSphinx.Decoder(config);
+    refreshGrammar();
+  });
+}
+
+listen();
+
+// Provide a user prompt
 var rl = Readline.createInterface({
   input: process.stdin,
   output: process.stdout
@@ -623,6 +718,7 @@ rl.on('line', command => {
   rl.pause();
 
   parseCommand(command, () => { rl.close(); });
+  refreshGrammar();
 
   // Unpause and refresh the prompt
   rl.prompt();
