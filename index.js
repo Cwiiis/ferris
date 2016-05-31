@@ -434,6 +434,7 @@ function matchIntent(skill, intent, input) {
   return null;
 }
 
+var warnWords = {};
 function lookupWords(string, decoder) {
   if (!decoder) {
     return true;
@@ -450,8 +451,16 @@ function lookupWords(string, decoder) {
   }
 
   if (wordsNotFound.length > 0) {
-    console.warn(`String '${string}' contains words not in dictionary:`);
+    var firstWord = true;
     for (var word of wordsNotFound) {
+      if (warnWords[word]) {
+        continue;
+      }
+      warnWords[word] = true;
+      if (firstWord) {
+        console.warn(`String '${string}' contains words not in dictionary:`);
+        firstWord = false;
+      }
       console.warn('\t' + word);
     }
     return false;
@@ -669,14 +678,22 @@ var skills = loadSkills();
 
 // Provide speech input
 var decoder = null;
+var mic = null;
 
+var speechMatch, speechMatchTime, speechSampleTime;
 function refreshGrammar() {
   if (!decoder) {
     return;
   }
 
+  decoder.endUtt();
   var grammar = buildGrammar(skills, [activeSkill], decoder);
   decoder.setJsgfString('ferris', grammar);
+  decoder.setSearch('ferris');
+
+  speechMatch = null;
+  speechMatchTime = speechSampleTime = Date.now();
+  decoder.startUtt();
 }
 
 function listen() {
@@ -702,7 +719,47 @@ function listen() {
     config.setString('-logfn', '/dev/null');
 
     decoder = new PocketSphinx.Decoder(config);
+    decoder.startUtt();
     refreshGrammar();
+
+    // Setup microphone and start streaming to the decoder
+    mic = Mic({ rate: '16000', channels: '1', device: 'default' });
+
+    var buffer = Concat(decode);
+    var stream = mic.getAudioStream();
+
+    var decode = data => {
+      decoder.processRaw(data, false, false);
+      var hyp = decoder.hyp();
+      if (hyp && (!speechMatch || hyp.hypstr !== speechMatch.hypstr)) {
+        speechMatchTime = Date.now();
+        speechMatch = hyp;
+      }
+
+      if ((!speechMatch && (Date.now() - speechMatchTime > 1000)) ||
+          (speechMatch && (Date.now() - speechMatchTime > 500))) {
+        if (speechMatch) {
+          console.log('Detected: ' + speechMatch.hypstr);
+          parseCommand(speechMatch.hypstr, () => { rl.close(); });
+        }
+
+        refreshGrammar();
+      }
+    };
+
+    stream.on('data', data => {
+      buffer.write(data);
+      if (Date.now() - speechSampleTime > 300) {
+        buffer.end();
+        speechSampleTime = Date.now();
+        buffer = Concat(decode);
+      }
+    });
+    stream.on('error', e => {
+      console.error('Error streaming from microphone', e);
+    });
+
+    mic.start();
   });
 }
 
