@@ -2,7 +2,7 @@
   "name": "ferris",
   "version": "0.0.1",
   "description": "Offline Alexa skills",
-  "license": "GPLv3",
+  "license": "GPL-3.0",
   "author": {
     "name": "Chris Lord",
     "email": "contact@chrislord.net",
