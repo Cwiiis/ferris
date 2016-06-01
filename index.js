@@ -680,22 +680,26 @@ var skills = loadSkills();
 var decoder = null;
 var mic = null;
 
-var speechMatch, speechMatchTime, speechSampleTime;
-function refreshGrammar() {
+var speechMatch, speechMatchTime, speechSampleTime, noiseLevel;
+function restartSTT(rebuildGrammar) {
   if (!decoder) {
     return;
   }
 
   decoder.endUtt();
-  var grammar = buildGrammar(skills, [activeSkill], decoder);
-  decoder.setJsgfString('ferris', grammar);
-  decoder.setSearch('ferris');
+  if (rebuildGrammar) {
+    var grammar = buildGrammar(skills, [activeSkill], decoder);
+    decoder.setJsgfString('ferris', grammar);
+    decoder.setSearch('ferris');
+  }
 
+  noiseLevel = { average: 0, samples: 0 };
   speechMatch = null;
   speechMatchTime = speechSampleTime = Date.now();
   decoder.startUtt();
 }
 
+const NOISE_THRESHOLD = 100;
 function listen() {
   // Not happy about needing to do this. Running pocketsphinx from the
   // command-line finds the default models automatically.
@@ -720,15 +724,30 @@ function listen() {
 
     decoder = new PocketSphinx.Decoder(config);
     decoder.startUtt();
-    refreshGrammar();
+    restartSTT(true);
 
     // Setup microphone and start streaming to the decoder
-    mic = Mic({ rate: '16000', channels: '1', device: 'default' });
+    mic = Mic(
+      { rate: '16000',
+        channels: '1',
+        encoding: 'signed-integer',
+        device: 'default' });
 
     var buffer = Concat(decode);
     var stream = mic.getAudioStream();
 
     var decode = data => {
+      // Calculate noise level
+      var sum = 0;
+      for (var i = 0; i < data.length; i+= 2) {
+        sum += Math.abs(data.readInt16LE(i));
+      }
+      noiseLevel.average =
+        ((noiseLevel.average * noiseLevel.samples) + sum) /
+        (noiseLevel.samples + data.length / 2);
+      noiseLevel.samples += data.length / 2;
+
+      // Pass data to decoder
       decoder.processRaw(data, false, false);
       var hyp = decoder.hyp();
       if (hyp && (!speechMatch || hyp.hypstr !== speechMatch.hypstr)) {
@@ -736,18 +755,29 @@ function listen() {
         speechMatch = hyp;
       }
 
-      if ((!speechMatch && (Date.now() - speechMatchTime > 1000)) ||
-          (speechMatch && (Date.now() - speechMatchTime > 500))) {
-        if (speechMatch) {
-          console.log('Detected: ' + speechMatch.hypstr);
-          parseCommand(speechMatch.hypstr, () => { rl.close(); });
+      if (!speechMatch || noiseLevel.average <= NOISE_THRESHOLD) {
+        if (Date.now() - speechMatchTime > 1500) {
+          /*console.log(`Silence detected (${noiseLevel.average}), ` +
+                      `restarting STT`);*/
+          restartSTT(false);
+        } else {
+          /*console.log(`Silence detected (${noiseLevel.average}) ` +
+                      `over a short period`);*/
         }
-
-        refreshGrammar();
+      } else if (Date.now() - speechMatchTime > 750) {
+        console.log(`Detected '${speechMatch.hypstr}', ` +
+                    `average noise: ${noiseLevel.average}`);
+        parseCommand(speechMatch.hypstr, () => { rl.close(); });
+        restartSTT(true);
       }
     };
 
     stream.on('data', data => {
+      // XXX: Quick dirty hack to stop listening during speech.
+      if (speechProcess) {
+        return;
+      }
+
       buffer.write(data);
       if (Date.now() - speechSampleTime > 300) {
         buffer.end();
