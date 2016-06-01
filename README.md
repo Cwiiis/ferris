@@ -8,8 +8,8 @@ Assuming your Alexa skills are located in a subdirectory of the current director
 
 ```
 const Ferris = require('./index');
-var skills = Ferris.loadSkills('skills');
-Ferris.listen(skills, () => { rl.close(); });
+Ferris.loadSkills('skills');
+Ferris.listen(() => { process.exit(0); });
 ```
 
 ## Usage

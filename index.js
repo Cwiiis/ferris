@@ -10,6 +10,7 @@ const Which = require('which');
 const NOISE_THRESHOLD = 100;
 
 module.exports = {
+skills: [],
 // Load skills
 loadSkills: function(skillsPath) {
   var skills = [];
@@ -111,7 +112,7 @@ loadSkills: function(skillsPath) {
       console.error('Failed to load skill: ' + path, e);
     }
   });
-  return skills;
+  this.skills = skills;
 },
 
 requestId: 0,
@@ -217,8 +218,8 @@ launch: function(skill, intent, slots) {
   skill.module.handler(event, skill.context);
 },
 
-listSkills: function(skills) {
-  for (var skill of skills) {
+listSkills: function() {
+  for (var skill of this.skills) {
     console.log('Skill \'' + skill.name + '\'');
     for (var intent in skill.intents) {
       console.log('\tIntent \'' + intent + '\'');
@@ -476,7 +477,7 @@ lookupWords: function(string, decoder) {
   return true;
 },
 
-buildGrammar: function(skills, activeSkills, decoder) {
+buildGrammar: function(activeSkills, decoder) {
   var grammar = '#JSGF V1.0;\ngrammar ferris;\n\n';
 
   // TODO: Add grammar for built-in slots
@@ -488,7 +489,7 @@ buildGrammar: function(skills, activeSkills, decoder) {
   // Add grammar for launching skills
   var foundSkill = false;
   var skillGrammar = '<ferris.launcher> = ';
-  for (var skill of skills) {
+  for (var skill of this.skills) {
     var normalised = this.normaliseCamelCase(skill.name);
 
     if (!this.lookupWords(normalised, decoder)) {
@@ -607,7 +608,7 @@ buildGrammar: function(skills, activeSkills, decoder) {
 },
 
 activeSkill: null,
-parseCommand: function(skills, command, onexit) {
+parseCommand: function(command, onexit) {
   command = this.normaliseString(command);
 
   switch (command.replace(/ .*$/, '')) {
@@ -620,12 +621,12 @@ parseCommand: function(skills, command, onexit) {
 
     case 'help':
     case 'list':
-      this.listSkills(skills);
+      this.listSkills();
       break;
 
     case 'launch':
       var matched = false;
-      for (var skill of skills) {
+      for (var skill of this.skills) {
         var skillName = command.replace(/launch /, '');
         if (skillName === this.normaliseString(skill.name) ||
             skillName === this.normaliseCamelCase(skill.name)) {
@@ -648,7 +649,7 @@ parseCommand: function(skills, command, onexit) {
       break;
 
     case 'grammar':
-      console.log(this.buildGrammar(skills, [this.activeSkill], this.decoder));
+      console.log(this.buildGrammar([this.activeSkill], this.decoder));
       break;
 
     case 'stop':
@@ -683,14 +684,14 @@ speechMatch: null,
 speechMatchTime: 0,
 speechSampleTime: 0,
 noiseLevel: { average: 0, samples: 0 },
-restartSTT: function(skills, rebuildGrammar) {
+restartSTT: function(rebuildGrammar) {
   if (!this.decoder) {
     return;
   }
 
   this.decoder.endUtt();
   if (rebuildGrammar) {
-    var grammar = this.buildGrammar(skills, [this.activeSkill], this.decoder);
+    var grammar = this.buildGrammar([this.activeSkill], this.decoder);
     this.decoder.setJsgfString('ferris', grammar);
     this.decoder.setSearch('ferris');
   }
@@ -701,7 +702,7 @@ restartSTT: function(skills, rebuildGrammar) {
   this.decoder.startUtt();
 },
 
-listen: function(skills, onexit) {
+listen: function(onexit) {
   // Not happy about needing to do this. Running pocketsphinx from the
   // command-line finds the default models automatically.
   Which('pocketsphinx_continuous', (e, path) => {
@@ -725,7 +726,7 @@ listen: function(skills, onexit) {
 
     this.decoder = new PocketSphinx.Decoder(config);
     this.decoder.startUtt();
-    this.restartSTT(skills, true);
+    this.restartSTT(true);
 
     // Setup microphone and start streaming to the decoder
     this.mic = Mic(
@@ -761,7 +762,7 @@ listen: function(skills, onexit) {
         if (Date.now() - this.speechMatchTime > 1500) {
           /*console.log(`Silence detected (${this.noiseLevel.average}), ` +
                       `restarting STT`);*/
-          this.restartSTT(skills, false);
+          this.restartSTT(false);
         } else {
           /*console.log(`Silence detected (${this.noiseLevel.average}) ` +
                       `over a short period`);*/
@@ -769,8 +770,8 @@ listen: function(skills, onexit) {
       } else if (Date.now() - this.speechMatchTime > 750) {
         console.log(`Detected '${this.speechMatch.hypstr}', ` +
                     `average noise: ${this.noiseLevel.average}`);
-        this.parseCommand(skills, this.speechMatch.hypstr, onexit);
-        this.restartSTT(skills, true);
+        this.parseCommand(this.speechMatch.hypstr, onexit);
+        this.restartSTT(true);
       }
     };
 

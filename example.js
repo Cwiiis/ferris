@@ -2,9 +2,10 @@ const Ferris = require('./index');
 const Readline = require('readline');
 
 // Load skills
-var skills = Ferris.loadSkills('skills');
+Ferris.loadSkills('skills');
 
-Ferris.listen(skills, () => { rl.close(); });
+// Start listening to voice
+Ferris.listen(() => { rl.close(); });
 
 // Provide a keyboard prompt
 var rl = Readline.createInterface({
@@ -15,8 +16,8 @@ var rl = Readline.createInterface({
 rl.on('line', command => {
   rl.pause();
 
-  Ferris.parseCommand(skills, command, () => { rl.close(); });
-  Ferris.restartSTT(skills, true);
+  Ferris.parseCommand(command, () => { rl.close(); });
+  Ferris.restartSTT(true);
 
   // Unpause and refresh the prompt
   rl.prompt();
