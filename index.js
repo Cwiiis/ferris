@@ -141,9 +141,12 @@ quiet: function() {
   }
 },
 
+speechCommand: { name: 'espeak', args: ['-m'] },
+
 say: function(text) {
   this.quiet();
-  this.speechProcess = ChildProcess.execFile('espeak', ['-m', text]);
+  this.speechProcess = ChildProcess.execFile(this.speechCommand.name,
+    this.speechCommand.args.concat(text));
 
   this.speechProcess.on('exit', () => {
     this.speechProcess = null;
