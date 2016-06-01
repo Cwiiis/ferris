@@ -5,13 +5,15 @@ const Mic = require('mic');
 const Nlp = require('nlp_compromise');
 const Path = require('path');
 const PocketSphinx = require('pocketsphinx').ps;
-const Readline = require('readline');
 const Which = require('which');
 
-// Load kills
-function loadSkills() {
-  var skillsPath = Path.join(__dirname, 'skills');
+const NOISE_THRESHOLD = 100;
+
+module.exports = {
+// Load skills
+loadSkills: function(skillsPath) {
   var skills = [];
+  skillsPath = Path.resolve(skillsPath);
   Fs.readdirSync(skillsPath).forEach(path => {
     // Check that this is a directory and not a file
     var skillDir = Path.join(skillsPath, path);
@@ -110,45 +112,45 @@ function loadSkills() {
     }
   });
   return skills;
-}
+},
 
-var requestId = 0;
-var sessionId = 'DefaultSession';
-var sessionAttributes = {};
-function createEvent(type, attributes) {
+requestId: 0,
+sessionId: 'DefaultSession',
+sessionAttributes: {},
+createEvent: function (type, attributes) {
   return {
     version: '1.0',
     session: {
-      sessionId: sessionId,
+      sessionId: this.sessionId,
       application: {
       },
-      attributes: sessionAttributes
+      attributes: this.sessionAttributes
     },
     request: {
-      requestId: requestId++,
+      requestId: this.requestId++,
       type: type,
       timestamp: Date.now()
     }
   };
-}
+},
 
-var speechProcess = null;
-function quiet() {
-  if (speechProcess) {
-    speechProcess.kill('SIGINT');
+speechProcess: null,
+quiet: function() {
+  if (this.speechProcess) {
+    this.speechProcess.kill('SIGINT');
   }
-}
+},
 
-function say(text) {
-  quiet();
-  speechProcess = ChildProcess.execFile('espeak', ['-m', text]);
+say: function(text) {
+  this.quiet();
+  this.speechProcess = ChildProcess.execFile('espeak', ['-m', text]);
 
-  speechProcess.on('exit', () => {
-    speechProcess = null;
+  this.speechProcess.on('exit', () => {
+    this.speechProcess = null;
   });
-}
+},
 
-function createContext(skill) {
+createContext: function(skill) {
   return {
     fail: e => {
       console.error('Event failed', e);
@@ -165,11 +167,11 @@ function createContext(skill) {
       if (speech) {
         switch (speech.type) {
           case 'SSML':
-            say(speech.ssml);
+            this.say(speech.ssml);
             break;
 
           case 'PlainText':
-            say(speech.text);
+            this.say(speech.text);
             break;
 
           default:
@@ -178,38 +180,41 @@ function createContext(skill) {
       }
 
       if (o.response.shouldEndSession) {
-        endSession(skill);
+        this.endSession(skill);
       }
     }
   };
-}
+},
 
-function startSession(skill, id) {
+startSession: function(skill, id) {
   if (id) {
-    sessionId = id;
+    this.sessionId = id;
   }
-  sessionAttributes = {};
+  this.sessionAttributes = {};
 
-  skill.context = createContext(skill);
-  var event = createEvent('LaunchRequest');
+  skill.context = this.createContext(skill);
+  var event = this.createEvent('LaunchRequest');
   event.session.new = true;
 
   skill.module.handler(event, skill.context);
-}
+},
 
-function endSession(skill) {
-  var event = createEvent('SessionEndedRequest');
+endSession: function(skill) {
+  var event = this.createEvent('SessionEndedRequest');
   skill.module.handler(event, skill.context);
   delete skill.context;
-}
+  if (this.activeSkill === skill) {
+    this.activeSkill = null;
+  }
+},
 
-function launch(skill, intent, slots) {
-  var event = createEvent('IntentRequest');
+launch: function(skill, intent, slots) {
+  var event = this.createEvent('IntentRequest');
   event.request.intent = { name: intent, slots: slots ? slots : {} };
   skill.module.handler(event, skill.context);
-}
+},
 
-function listSkills(skills) {
+listSkills: function(skills) {
   for (var skill of skills) {
     console.log('Skill \'' + skill.name + '\'');
     for (var intent in skill.intents) {
@@ -233,18 +238,18 @@ function listSkills(skills) {
       }
     }
   }
-}
+},
 
-function normaliseString(string) {
+normaliseString: function(string) {
   return string.replace(/ +/, ' ').toLocaleLowerCase().trim();
-}
+},
 
-function normaliseCamelCase(string) {
-  return normaliseString(string.replace(/([A-Z])/, ' $1'));
-}
+normaliseCamelCase: function(string) {
+  return this.normaliseString(string.replace(/([A-Z])/, ' $1'));
+},
 
 // Translate input text with a particular matched skill/intent with slot output
-function matchSlot(skill, intent, slotName, text) {
+matchSlot: function(skill, intent, slotName, text) {
   if (!intent.slots) {
     return null;
   }
@@ -266,7 +271,6 @@ function matchSlot(skill, intent, slotName, text) {
       switch(slotType) {
         case 'AMAZON.DATE':
           var date = Nlp.date(text);
-          console.log(date);
 
           // TODO: Surprising nlp doesn't support this, see about adding it.
           //       It also doesn't seem to support durations, or have a concept
@@ -343,9 +347,9 @@ function matchSlot(skill, intent, slotName, text) {
   }
 
   return null;
-}
+},
 
-function matchIntent(skill, intent, input) {
+matchIntent: function(skill, intent, input) {
   if (!intent.utterances) {
     return null;
   }
@@ -411,8 +415,8 @@ function matchIntent(skill, intent, input) {
         for (var j = 1; j < i; j++) {
           matchString += ' ' + words[j];
         }
-        var value = matchSlot(skill, intent, slotMatch.name,
-                              normaliseString(matchString));
+        var value = this.matchSlot(skill, intent, slotMatch.name,
+                                   this.normaliseString(matchString));
         if (value !== null) {
           result[slotMatch.name] = { value: value };
           break;
@@ -432,10 +436,10 @@ function matchIntent(skill, intent, input) {
   }
 
   return null;
-}
+},
 
-var warnWords = {};
-function lookupWords(string, decoder) {
+warnWords: {},
+lookupWords: function(string, decoder) {
   if (!decoder) {
     return true;
   }
@@ -453,10 +457,10 @@ function lookupWords(string, decoder) {
   if (wordsNotFound.length > 0) {
     var firstWord = true;
     for (var word of wordsNotFound) {
-      if (warnWords[word]) {
+      if (this.warnWords[word]) {
         continue;
       }
-      warnWords[word] = true;
+      this.warnWords[word] = true;
       if (firstWord) {
         console.warn(`String '${string}' contains words not in dictionary:`);
         firstWord = false;
@@ -467,9 +471,9 @@ function lookupWords(string, decoder) {
   }
 
   return true;
-}
+},
 
-function buildGrammar(skills, activeSkills, decoder) {
+buildGrammar: function(skills, activeSkills, decoder) {
   var grammar = '#JSGF V1.0;\ngrammar ferris;\n\n';
 
   // TODO: Add grammar for built-in slots
@@ -482,9 +486,9 @@ function buildGrammar(skills, activeSkills, decoder) {
   var foundSkill = false;
   var skillGrammar = '<ferris.launcher> = ';
   for (var skill of skills) {
-    var normalised = normaliseCamelCase(skill.name);
+    var normalised = this.normaliseCamelCase(skill.name);
 
-    if (!lookupWords(normalised, decoder)) {
+    if (!this.lookupWords(normalised, decoder)) {
       continue;
     }
 
@@ -513,10 +517,10 @@ function buildGrammar(skills, activeSkills, decoder) {
         var foundSlot = false;
         var slotGrammar = `<${skill.name}.${slotName}> = `;
         for (var slotText of skill.customSlots[slotName]) {
-          var normalised = normaliseString(slotText);
+          var normalised = this.normaliseString(slotText);
 
           // Verify the string is ok with the current dictionary
-          if (!lookupWords(normalised, decoder)) {
+          if (!this.lookupWords(normalised, decoder)) {
             continue;
           }
 
@@ -551,9 +555,9 @@ function buildGrammar(skills, activeSkills, decoder) {
         var slots = intentGrammar.match(/<[^>]*>/g);
         var normalised = '';
         for (var word of split) {
-          word = normaliseString(word);
+          word = this.normaliseString(word);
 
-          if (!lookupWords(word, decoder)) {
+          if (!this.lookupWords(word, decoder)) {
             valid = false;
           }
 
@@ -597,11 +601,11 @@ function buildGrammar(skills, activeSkills, decoder) {
   grammar += ' ;\n';
 
   return grammar;
-}
+},
 
-var activeSkill = null;
-function parseCommand(command, onexit) {
-  command = normaliseString(command);
+activeSkill: null,
+parseCommand: function(skills, command, onexit) {
+  command = this.normaliseString(command);
 
   switch (command.replace(/ .*$/, '')) {
     case 'exit':
@@ -613,23 +617,22 @@ function parseCommand(command, onexit) {
 
     case 'help':
     case 'list':
-      listSkills(skills);
+      this.listSkills(skills);
       break;
 
     case 'launch':
       var matched = false;
       for (var skill of skills) {
         var skillName = command.replace(/launch /, '');
-        if (skillName === normaliseString(skill.name) ||
-            skillName === normaliseCamelCase(skill.name)) {
-          if (activeSkill !== skill) {
-            if (activeSkill) {
-              endSession(activeSkill);
-              activeSkill = null;
+        if (skillName === this.normaliseString(skill.name) ||
+            skillName === this.normaliseCamelCase(skill.name)) {
+          if (this.activeSkill !== skill) {
+            if (this.activeSkill) {
+              this.endSession(this.activeSkill);
             }
-            startSession(skill);
+            this.startSession(skill);
             if (skill.context) {
-              activeSkill = skill;
+              this.activeSkill = skill;
             }
             matched = true;
             break;
@@ -642,28 +645,25 @@ function parseCommand(command, onexit) {
       break;
 
     case 'grammar':
-      console.log(buildGrammar(skills, [activeSkill], decoder));
+      console.log(this.buildGrammar(skills, [this.activeSkill], this.decoder));
       break;
 
     case 'stop':
-      if (activeSkill) {
-        endSession(activeSkill);
-        activeSkill = null;
+      if (this.activeSkill) {
+        this.endSession(this.activeSkill);
       } else {
         console.log('No active skill');
       }
       break;
 
     default:
-      if (activeSkill) {
-        for (var intent in activeSkill.intents) {
-          var result = matchIntent(activeSkill, activeSkill.intents[intent],
-                                   command);
+      if (this.activeSkill) {
+        for (var intent in this.activeSkill.intents) {
+          var result = this.matchIntent(this.activeSkill,
+                                        this.activeSkill.intents[intent],
+                                        command);
           if (result) {
-            launch(activeSkill, intent, result);
-            if (!activeSkill.context) {
-              activeSkill = null;
-            }
+            this.launch(this.activeSkill, intent, result);
             return;
           }
         }
@@ -671,36 +671,34 @@ function parseCommand(command, onexit) {
       console.log('Command unrecognised');
       break;
   }
-}
-
-// Load skills
-var skills = loadSkills();
+},
 
 // Provide speech input
-var decoder = null;
-var mic = null;
-
-var speechMatch, speechMatchTime, speechSampleTime, noiseLevel;
-function restartSTT(rebuildGrammar) {
-  if (!decoder) {
+decoder: null,
+mic: null,
+speechMatch: null,
+speechMatchTime: 0,
+speechSampleTime: 0,
+noiseLevel: { average: 0, samples: 0 },
+restartSTT: function(skills, rebuildGrammar) {
+  if (!this.decoder) {
     return;
   }
 
-  decoder.endUtt();
+  this.decoder.endUtt();
   if (rebuildGrammar) {
-    var grammar = buildGrammar(skills, [activeSkill], decoder);
-    decoder.setJsgfString('ferris', grammar);
-    decoder.setSearch('ferris');
+    var grammar = this.buildGrammar(skills, [this.activeSkill], this.decoder);
+    this.decoder.setJsgfString('ferris', grammar);
+    this.decoder.setSearch('ferris');
   }
 
-  noiseLevel = { average: 0, samples: 0 };
-  speechMatch = null;
-  speechMatchTime = speechSampleTime = Date.now();
-  decoder.startUtt();
-}
+  this.noiseLevel = { average: 0, samples: 0 };
+  this.speechMatch = null;
+  this.speechMatchTime = this.speechSampleTime = Date.now();
+  this.decoder.startUtt();
+},
 
-const NOISE_THRESHOLD = 100;
-function listen() {
+listen: function(skills, onexit) {
   // Not happy about needing to do this. Running pocketsphinx from the
   // command-line finds the default models automatically.
   Which('pocketsphinx_continuous', (e, path) => {
@@ -722,19 +720,19 @@ function listen() {
     config.setString("-lm", Path.join(path, 'en-us.lm.bin'));
     config.setString('-logfn', '/dev/null');
 
-    decoder = new PocketSphinx.Decoder(config);
-    decoder.startUtt();
-    restartSTT(true);
+    this.decoder = new PocketSphinx.Decoder(config);
+    this.decoder.startUtt();
+    this.restartSTT(skills, true);
 
     // Setup microphone and start streaming to the decoder
-    mic = Mic(
+    this.mic = Mic(
       { rate: '16000',
         channels: '1',
         encoding: 'signed-integer',
         device: 'default' });
 
     var buffer = Concat(decode);
-    var stream = mic.getAudioStream();
+    var stream = this.mic.getAudioStream();
 
     var decode = data => {
       // Calculate noise level
@@ -742,46 +740,47 @@ function listen() {
       for (var i = 0; i < data.length; i+= 2) {
         sum += Math.abs(data.readInt16LE(i));
       }
-      noiseLevel.average =
-        ((noiseLevel.average * noiseLevel.samples) + sum) /
-        (noiseLevel.samples + data.length / 2);
-      noiseLevel.samples += data.length / 2;
+      this.noiseLevel.average =
+        ((this.noiseLevel.average * this.noiseLevel.samples) + sum) /
+        (this.noiseLevel.samples + data.length / 2);
+      this.noiseLevel.samples += data.length / 2;
 
       // Pass data to decoder
-      decoder.processRaw(data, false, false);
-      var hyp = decoder.hyp();
-      if (hyp && (!speechMatch || hyp.hypstr !== speechMatch.hypstr)) {
-        speechMatchTime = Date.now();
-        speechMatch = hyp;
+      this.decoder.processRaw(data, false, false);
+      var hyp = this.decoder.hyp();
+      if (hyp && (!this.speechMatch ||
+                  hyp.hypstr !== this.speechMatch.hypstr)) {
+        this.speechMatchTime = Date.now();
+        this.speechMatch = hyp;
       }
 
-      if (!speechMatch || noiseLevel.average <= NOISE_THRESHOLD) {
-        if (Date.now() - speechMatchTime > 1500) {
-          /*console.log(`Silence detected (${noiseLevel.average}), ` +
+      if (!this.speechMatch || this.noiseLevel.average <= NOISE_THRESHOLD) {
+        if (Date.now() - this.speechMatchTime > 1500) {
+          /*console.log(`Silence detected (${this.noiseLevel.average}), ` +
                       `restarting STT`);*/
-          restartSTT(false);
+          this.restartSTT(skills, false);
         } else {
-          /*console.log(`Silence detected (${noiseLevel.average}) ` +
+          /*console.log(`Silence detected (${this.noiseLevel.average}) ` +
                       `over a short period`);*/
         }
-      } else if (Date.now() - speechMatchTime > 750) {
-        console.log(`Detected '${speechMatch.hypstr}', ` +
-                    `average noise: ${noiseLevel.average}`);
-        parseCommand(speechMatch.hypstr, () => { rl.close(); });
-        restartSTT(true);
+      } else if (Date.now() - this.speechMatchTime > 750) {
+        console.log(`Detected '${this.speechMatch.hypstr}', ` +
+                    `average noise: ${this.noiseLevel.average}`);
+        this.parseCommand(skills, this.speechMatch.hypstr, onexit);
+        this.restartSTT(skills, true);
       }
     };
 
     stream.on('data', data => {
       // XXX: Quick dirty hack to stop listening during speech.
-      if (speechProcess) {
+      if (this.speechProcess) {
         return;
       }
 
       buffer.write(data);
-      if (Date.now() - speechSampleTime > 300) {
+      if (Date.now() - this.speechSampleTime > 300) {
         buffer.end();
-        speechSampleTime = Date.now();
+        this.speechSampleTime = Date.now();
         buffer = Concat(decode);
       }
     });
@@ -789,36 +788,8 @@ function listen() {
       console.error('Error streaming from microphone', e);
     });
 
-    mic.start();
+    this.mic.start();
   });
 }
-
-listen();
-
-// Provide a user prompt
-var rl = Readline.createInterface({
-  input: process.stdin,
-  output: process.stdout
-});
-
-rl.on('line', command => {
-  rl.pause();
-
-  parseCommand(command, () => { rl.close(); });
-  refreshGrammar();
-
-  // Unpause and refresh the prompt
-  rl.prompt();
-}).on('close', () => {
-  // Clean-up
-  quiet();
-  if (activeSkill) {
-    endSession(activeSkill);
-    activeSkill = null;
-  }
-
-  process.exit(0);
-});
-
-rl.prompt();
+};
 

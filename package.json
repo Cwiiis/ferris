@@ -2,14 +2,22 @@
   "name": "ferris",
   "version": "0.0.1",
   "description": "Offline Alexa skills",
-  "author": "Chris Lord",
+  "license": "GPLv3",
+  "author": {
+    "name": "Chris Lord",
+    "email": "contact@chrislord.net",
+    "url": "http://chrislord.net/"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://gitlab.com/Cwiiis/ferris.git"
+  },
   "main": "index.js",
   "dependencies": {
     "concat-stream": "1.5.1",
     "mic": "2.0.1",
     "nlp_compromise": "4.10.6",
     "pocketsphinx": "5.0.5",
-    "request-promise": "1.0.2",
     "which": "1.2.9"
   }
 }
