@@ -53,6 +53,7 @@ loadSkills: function(skillsPath) {
       var intentSchema = JSON.parse(data);
       for (var intent of intentSchema.intents) {
         var localIntent = skill.intents[intent.intent] = {};
+        localIntent.persist = intent.persist;
         if (intent.slots) {
           localIntent.slots = {};
           for (var slot of intent.slots) {
@@ -190,19 +191,6 @@ createContext: function(skill) {
   };
 },
 
-startSession: function(skill, id) {
-  if (id) {
-    this.sessionId = id;
-  }
-  this.sessionAttributes = {};
-
-  skill.context = this.createContext(skill);
-  var event = this.createEvent('LaunchRequest');
-  event.session.new = true;
-
-  skill.module.handler(event, skill.context);
-},
-
 endSession: function(skill) {
   var event = this.createEvent('SessionEndedRequest');
   skill.module.handler(event, skill.context);
@@ -212,9 +200,27 @@ endSession: function(skill) {
   }
 },
 
-launch: function(skill, intent, slots) {
-  var event = this.createEvent('IntentRequest');
-  event.request.intent = { name: intent, slots: slots ? slots : {} };
+launch: function(skill, intent, slots, id) {
+  if (id) {
+    this.sessionId = id;
+  }
+
+  var newSkill = false;
+  if (skill !== this.activeSkill) {
+    if (this.activeSkill) {
+      this.endSession(this.activeSkill);
+    }
+    this.sessionAttributes = {};
+    skill.context = this.createContext(skill);
+    newSkill = true;
+  }
+  var event = this.createEvent(newSkill ? 'LaunchRequest' : 'IntentRequest');
+  event.session.new = newSkill;
+
+  if (intent) {
+    event.request.intent = { name: intent, slots: slots ? slots : {} };
+  }
+
   skill.module.handler(event, skill.context);
 },
 
@@ -477,7 +483,7 @@ lookupWords: function(string, decoder) {
   return true;
 },
 
-buildGrammar: function(activeSkills, decoder) {
+buildGrammar: function() {
   var grammar = '#JSGF V1.0;\ngrammar ferris;\n\n';
 
   // TODO: Add grammar for built-in slots
@@ -492,7 +498,7 @@ buildGrammar: function(activeSkills, decoder) {
   for (var skill of this.skills) {
     var normalised = this.normaliseCamelCase(skill.name);
 
-    if (!this.lookupWords(normalised, decoder)) {
+    if (!this.lookupWords(normalised, this.decoder)) {
       continue;
     }
 
@@ -504,11 +510,7 @@ buildGrammar: function(activeSkills, decoder) {
   }
 
   // Add grammar for given array of skills
-  for (var skill of activeSkills) {
-    if (!skill) {
-      continue;
-    }
-
+  for (var skill of this.skills) {
     grammar += '\n';
 
     // Add grammar for custom slots
@@ -524,7 +526,7 @@ buildGrammar: function(activeSkills, decoder) {
           var normalised = this.normaliseString(slotText);
 
           // Verify the string is ok with the current dictionary
-          if (!this.lookupWords(normalised, decoder)) {
+          if (!this.lookupWords(normalised, this.decoder)) {
             continue;
           }
 
@@ -540,6 +542,9 @@ buildGrammar: function(activeSkills, decoder) {
     // Add grammar for intents
     for (var intentName in skill.intents) {
       var intent = skill.intents[intentName];
+      if (skill !== this.activeSkill && !intent.persist) {
+        continue;
+      }
       if (!intent.utterances || intent.utterances.length <= 0) {
         continue;
       }
@@ -561,7 +566,7 @@ buildGrammar: function(activeSkills, decoder) {
         for (var word of split) {
           word = this.normaliseString(word);
 
-          if (!this.lookupWords(word, decoder)) {
+          if (!this.lookupWords(word, this.decoder)) {
             valid = false;
           }
 
@@ -588,13 +593,12 @@ buildGrammar: function(activeSkills, decoder) {
 
   // Build the public rule
   grammar += '\npublic <ferris.input> = <ferris.command> | <ferris.launcher>';
-  for (var skill of activeSkills) {
-    if (!skill) {
-      continue;
-    }
-
+  for (var skill of this.skills) {
     for (var intentName in skill.intents) {
       var intent = skill.intents[intentName];
+      if (skill !== this.activeSkill && !intent.persist) {
+        continue;
+      }
       if (!intent.utterances || intent.utterances.length <= 0) {
         continue;
       }
@@ -634,7 +638,7 @@ parseCommand: function(command, onexit) {
             if (this.activeSkill) {
               this.endSession(this.activeSkill);
             }
-            this.startSession(skill);
+            this.launch(skill);
             if (skill.context) {
               this.activeSkill = skill;
             }
@@ -644,12 +648,12 @@ parseCommand: function(command, onexit) {
         }
       }
       if (!matched) {
-        console.log('Skill not found');
+        return false;
       }
       break;
 
     case 'grammar':
-      console.log(this.buildGrammar([this.activeSkill], this.decoder));
+      console.log(this.buildGrammar());
       break;
 
     case 'stop':
@@ -661,20 +665,39 @@ parseCommand: function(command, onexit) {
       break;
 
     default:
+      var testIntent = (skill, intentName) => {
+        var result = this.matchIntent(skill, skill.intents[intentName],
+                                      command);
+        if (result) {
+          this.launch(skill, intentName, result);
+          if (skill.context) {
+            this.activeSkill = skill;
+          }
+          return true;
+        }
+        return false;
+      }
       if (this.activeSkill) {
-        for (var intent in this.activeSkill.intents) {
-          var result = this.matchIntent(this.activeSkill,
-                                        this.activeSkill.intents[intent],
-                                        command);
-          if (result) {
-            this.launch(this.activeSkill, intent, result);
-            return;
+        for (var intentName in this.activeSkill.intents) {
+          if (testIntent(this.activeSkill, intentName)) {
+            return true;
           }
         }
       }
-      console.log('Command unrecognised');
-      break;
+      for (var skill of this.skills) {
+        for (var intentName in skill.intents) {
+          if (!skill.intents[intentName].persist) {
+            continue;
+          }
+          if (testIntent(skill, intentName)) {
+            return true;
+          }
+        }
+      }
+      return false;
   }
+
+  return true;
 },
 
 // Provide speech input
@@ -691,7 +714,7 @@ restartSTT: function(rebuildGrammar) {
 
   this.decoder.endUtt();
   if (rebuildGrammar) {
-    var grammar = this.buildGrammar([this.activeSkill], this.decoder);
+    var grammar = this.buildGrammar();
     this.decoder.setJsgfString('ferris', grammar);
     this.decoder.setSearch('ferris');
   }
@@ -770,8 +793,10 @@ listen: function(onexit) {
       } else if (Date.now() - this.speechMatchTime > 750) {
         console.log(`Detected '${this.speechMatch.hypstr}', ` +
                     `average noise: ${this.noiseLevel.average}`);
-        this.parseCommand(this.speechMatch.hypstr, onexit);
-        this.restartSTT(true);
+        if (this.parseCommand(this.speechMatch.hypstr, onexit) ||
+            Date.now() - this.speechMatchTime > 1500) {
+          this.restartSTT(true);
+        }
       }
     };
 

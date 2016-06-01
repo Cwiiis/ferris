@@ -24,3 +24,7 @@ The following commands are available:
 ## Limitations
 
 Pocketsphinx cannot recognise words that aren't in its dictionary. Skill names are derived from their CamelCase directory name and must consist of dictionary words. Built-in slots only have limited support, and are not as flexible as the same slots on the real Amazon Echo service (for now).
+
+## Differences / Extensions
+
+Ferris does not require a 'wake' word to launch intents. Currently available input can be queried with the `grammar` command. Intents can have the boolean property `persist`, that when set to `true`, allows the intent to be launched at any time, without using the `launch` command first. It's best to make limited use of this functionality as a large grammar will reduce the chance of successful and accurate matches.

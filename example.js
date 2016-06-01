@@ -16,8 +16,11 @@ var rl = Readline.createInterface({
 rl.on('line', command => {
   rl.pause();
 
-  Ferris.parseCommand(command, () => { rl.close(); });
-  Ferris.restartSTT(true);
+  if (!Ferris.parseCommand(command, () => { rl.close(); })) {
+    console.log('Command unrecognised');
+  } else {
+    Ferris.restartSTT(true);
+  }
 
   // Unpause and refresh the prompt
   rl.prompt();
