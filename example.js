@@ -5,7 +5,7 @@ const Readline = require('readline');
 Ferris.loadSkills('skills');
 
 // Start listening to voice
-Ferris.listen(() => { rl.close(); });
+Ferris.listen(() => { Ferris.say('yes?'); }, () => { rl.close(); });
 
 // Provide a keyboard prompt
 var rl = Readline.createInterface({

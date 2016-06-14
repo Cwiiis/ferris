@@ -483,14 +483,24 @@ lookupWords: function(string, decoder) {
   return true;
 },
 
+// Wake-word variables
+wakeWord: 'ferris',
+wakeTime: 5000,
+wakeTimeout: null,
+awake: false,
+
+// Enable/disable built-in commands via speech
+enableBuiltins: true,
+
 buildGrammar: function() {
   var grammar = '#JSGF V1.0;\ngrammar ferris;\n\n';
 
   // TODO: Add grammar for built-in slots
 
   // Add grammar for built-in commands
-  grammar +=
-    '<ferris.command> = exit | quit | help | list | grammar | stop ;\n';
+  grammar += this.enableBuiltins ?
+    '<ferris.command> = exit | quit | help | list | grammar | stop ;\n' :
+    '<ferris.command> = help | stop ;\n';
 
   // Add grammar for launching skills
   var foundSkill = false;
@@ -592,7 +602,22 @@ buildGrammar: function() {
   }
 
   // Build the public rule
-  grammar += '\npublic <ferris.input> = <ferris.command> | <ferris.launcher>';
+  // Add wake word
+  grammar += '\npublic <ferris.input> = ';
+  var wakeWord = '';
+  if (!this.awake && (this.wakeWord && this.wakeWord.length > 0)) {
+    if (!this.decoder.lookupWord(this.wakeWord)) {
+      console.warn('Wake word \'' + this.wakeWord +
+                   '\' not present in dictionary, disabling wake word');
+      this.wakeWord = '';
+    } else {
+      grammar += `${this.wakeWord} | `;
+      wakeWord = this.wakeWord + ' ';
+    }
+  }
+
+  // Add commands
+  grammar += `${wakeWord}<ferris.command> | ${wakeWord}<ferris.launcher>`;
   for (var skill of this.skills) {
     for (var intentName in skill.intents) {
       var intent = skill.intents[intentName];
@@ -603,7 +628,7 @@ buildGrammar: function() {
         continue;
       }
 
-      grammar += ` | <${skill.name}.${intentName}>`;
+      grammar += ` | ${wakeWord}<${skill.name}.${intentName}>`;
     }
   }
   grammar += ' ;\n';
@@ -725,7 +750,7 @@ restartSTT: function(rebuildGrammar) {
   this.decoder.startUtt();
 },
 
-listen: function(onexit) {
+listen: function(onwake, onexit) {
   // Not happy about needing to do this. Running pocketsphinx from the
   // command-line finds the default models automatically.
   Which('pocketsphinx_continuous', (e, path) => {
@@ -793,8 +818,45 @@ listen: function(onexit) {
       } else if (Date.now() - this.speechMatchTime > 750) {
         console.log(`Detected '${this.speechMatch.hypstr}', ` +
                     `average noise: ${this.noiseLevel.average}`);
-        if (this.parseCommand(this.speechMatch.hypstr, onexit) ||
-            Date.now() - this.speechMatchTime > 1500) {
+        var commandExecuted = false;
+
+        if (!this.awake && this.wakeWord && this.wakeWord.length > 0) {
+          var wakeWord = this.wakeWord + ' ';
+          if (this.speechMatch.hypstr === this.wakeWord) {
+            commandExecuted = true;
+          } else if (this.speechMatch.hypstr.startsWith(wakeWord)) {
+            var speechMatch = this.speechMatch.hypstr.replace(wakeWord, '');
+            commandExecuted = this.parseCommand(speechMatch, onexit);
+          }
+        } else {
+          commandExecuted = this.parseCommand(this.speechMatch.hypstr, onexit);
+        }
+        if (commandExecuted) {
+          // Mark as awake - the grammar will be rebuilt by the restartSTT
+          // call below.
+          if (!this.awake) {
+            console.log('Wake word used, becoming active');
+            this.awake = true;
+            if (onwake) {
+              onwake();
+            }
+          }
+
+          if (this.wakeTimeout) {
+            clearTimeout(this.wakeTimeout);
+          }
+
+          // Timeout the current active skill / require the wake-word again
+          this.wakeTimeout = setTimeout(() => {
+            console.log('Timed out, going to sleep');
+            this.awake = false;
+            if (this.activeSkill) {
+              this.endSession(this.activeSkill);
+            }
+            this.restartSTT(true);
+          }, this.wakeTime);
+        }
+        if (commandExecuted || Date.now() - this.speechMatchTime > 1500) {
           this.restartSTT(true);
         }
       }
