@@ -750,6 +750,7 @@ restartSTT: function(rebuildGrammar) {
   this.decoder.startUtt();
 },
 
+matchThreshold: 3000,
 listen: function(onwake, onexit) {
   // Not happy about needing to do this. Running pocketsphinx from the
   // command-line finds the default models automatically.
@@ -800,8 +801,8 @@ listen: function(onwake, onexit) {
       // Pass data to decoder
       this.decoder.processRaw(data, false, false);
       var hyp = this.decoder.hyp();
-      if (hyp && (!this.speechMatch ||
-                  hyp.hypstr !== this.speechMatch.hypstr)) {
+      if (hyp && (Math.abs(hyp.bestScore) < this.matchThreshold) &&
+          (!this.speechMatch || hyp.hypstr !== this.speechMatch.hypstr)) {
         this.speechMatchTime = Date.now();
         this.speechMatch = hyp;
       }
@@ -816,17 +817,24 @@ listen: function(onwake, onexit) {
                       `over a short period`);*/
         }
       } else if (Date.now() - this.speechMatchTime > 750) {
-        console.log(`Detected '${this.speechMatch.hypstr}', ` +
+        console.log(`Detected '${this.speechMatch.hypstr}' ` +
+                    `(${this.speechMatch.bestScore}), ` +
                     `average noise: ${this.noiseLevel.average}`);
         var commandExecuted = false;
+        var justWakeWord = false;
 
         if (!this.awake && this.wakeWord && this.wakeWord.length > 0) {
           var wakeWord = this.wakeWord + ' ';
           if (this.speechMatch.hypstr === this.wakeWord) {
             commandExecuted = true;
+            justWakeWord = true;
           } else if (this.speechMatch.hypstr.startsWith(wakeWord)) {
             var speechMatch = this.speechMatch.hypstr.replace(wakeWord, '');
             commandExecuted = this.parseCommand(speechMatch, onexit);
+            if (!commandExecuted) {
+              commandExecuted = true;
+              justWakeWord = true;
+            }
           }
         } else {
           commandExecuted = this.parseCommand(this.speechMatch.hypstr, onexit);
@@ -837,7 +845,7 @@ listen: function(onwake, onexit) {
           if (!this.awake) {
             console.log('Wake word used, becoming active');
             this.awake = true;
-            if (onwake) {
+            if (onwake && justWakeWord) {
               onwake();
             }
           }
