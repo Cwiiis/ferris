@@ -7,10 +7,43 @@ const Path = require('path');
 const PocketSphinx = require('pocketsphinx').ps;
 const Which = require('which');
 
-const NOISE_THRESHOLD = 100;
-
 module.exports = {
+
+// Skill properties
 skills: [],
+activeSkill: null,
+
+// Alexa event properties
+requestId: 0,
+sessionId: 'DefaultSession',
+sessionAttributes: {},
+
+// Speech synthesis properties
+speechCommand: { name: 'espeak', args: ['-m'] },
+speechProcess: null,
+
+// Words not in the pocketsphinx dictionary that we've warned on the console
+warnWords: {},
+
+// Wake-word variables
+wakeWord: 'ferris',
+wakeTime: 5000,
+wakeTimeout: null,
+awake: false,
+
+// Enable/disable built-in commands via speech
+enableBuiltins: true,
+
+// Speech input properties
+decoder: null,
+mic: null,
+speechMatch: null,
+speechMatchTime: 0,
+speechSampleTime: 0,
+noiseLevel: { average: 0, samples: 0 },
+noiseThreshold: 100,
+matchThreshold: 8000,
+
 // Load skills
 loadSkills: function(skillsPath) {
   var skills = [];
@@ -116,9 +149,6 @@ loadSkills: function(skillsPath) {
   this.skills = skills;
 },
 
-requestId: 0,
-sessionId: 'DefaultSession',
-sessionAttributes: {},
 createEvent: function (type, attributes) {
   return {
     version: '1.0',
@@ -136,14 +166,11 @@ createEvent: function (type, attributes) {
   };
 },
 
-speechProcess: null,
 quiet: function() {
   if (this.speechProcess) {
     this.speechProcess.kill('SIGINT');
   }
 },
-
-speechCommand: { name: 'espeak', args: ['-m'] },
 
 say: function(text) {
   this.quiet();
@@ -448,7 +475,6 @@ matchIntent: function(skill, intent, input) {
   return null;
 },
 
-warnWords: {},
 lookupWords: function(string, decoder) {
   if (!decoder) {
     return true;
@@ -482,15 +508,6 @@ lookupWords: function(string, decoder) {
 
   return true;
 },
-
-// Wake-word variables
-wakeWord: 'ferris',
-wakeTime: 5000,
-wakeTimeout: null,
-awake: false,
-
-// Enable/disable built-in commands via speech
-enableBuiltins: true,
 
 buildGrammar: function() {
   var grammar = '#JSGF V1.0;\ngrammar ferris;\n\n';
@@ -636,7 +653,6 @@ buildGrammar: function() {
   return grammar;
 },
 
-activeSkill: null,
 parseCommand: function(command, onexit) {
   command = this.normaliseString(command);
 
@@ -725,13 +741,6 @@ parseCommand: function(command, onexit) {
   return true;
 },
 
-// Provide speech input
-decoder: null,
-mic: null,
-speechMatch: null,
-speechMatchTime: 0,
-speechSampleTime: 0,
-noiseLevel: { average: 0, samples: 0 },
 restartSTT: function(rebuildGrammar) {
   if (!this.decoder) {
     return;
@@ -750,7 +759,31 @@ restartSTT: function(rebuildGrammar) {
   this.decoder.startUtt();
 },
 
-matchThreshold: 3000,
+wakeUp: function(onwake) {
+  if (!this.awake) {
+    console.log('Waking up');
+    this.awake = true;
+    onwake && onwake();
+  }
+
+  if (this.wakeTimeout) {
+    clearTimeout(this.wakeTimeout);
+  }
+
+  // Timeout the current active skill / require the wake-word again
+  this.wakeTimeout = setTimeout(() => {
+    console.log('Timed out, going to sleep');
+    this.awake = false;
+    this.wakeTimeout = null;
+    if (this.activeSkill) {
+      this.endSession(this.activeSkill);
+    }
+    this.restartSTT(true);
+  }, this.wakeTime);
+
+  this.restartSTT(true);
+},
+
 listen: function(onwake, onexit) {
   // Not happy about needing to do this. Running pocketsphinx from the
   // command-line finds the default models automatically.
@@ -807,11 +840,16 @@ listen: function(onwake, onexit) {
         this.speechMatch = hyp;
       }
 
-      if (!this.speechMatch || this.noiseLevel.average <= NOISE_THRESHOLD) {
+      if (!this.speechMatch || this.noiseLevel.average <= this.noiseThreshold) {
         if (Date.now() - this.speechMatchTime > 1500) {
           /*console.log(`Silence detected (${this.noiseLevel.average}), ` +
                       `restarting STT`);*/
-          this.restartSTT(false);
+          if (!this.awake && this.speechMatch &&
+              this.speechMatch.hypstr.startsWith(this.wakeWord + ' ')) {
+            this.wakeUp(onwake);
+          } else {
+            this.restartSTT(false);
+          }
         } else {
           /*console.log(`Silence detected (${this.noiseLevel.average}) ` +
                       `over a short period`);*/
@@ -831,40 +869,13 @@ listen: function(onwake, onexit) {
           } else if (this.speechMatch.hypstr.startsWith(wakeWord)) {
             var speechMatch = this.speechMatch.hypstr.replace(wakeWord, '');
             commandExecuted = this.parseCommand(speechMatch, onexit);
-            if (!commandExecuted) {
-              commandExecuted = true;
-              justWakeWord = true;
-            }
           }
         } else {
           commandExecuted = this.parseCommand(this.speechMatch.hypstr, onexit);
         }
         if (commandExecuted) {
-          // Mark as awake - the grammar will be rebuilt by the restartSTT
-          // call below.
-          if (!this.awake) {
-            console.log('Wake word used, becoming active');
-            this.awake = true;
-            if (onwake && justWakeWord) {
-              onwake();
-            }
-          }
-
-          if (this.wakeTimeout) {
-            clearTimeout(this.wakeTimeout);
-          }
-
-          // Timeout the current active skill / require the wake-word again
-          this.wakeTimeout = setTimeout(() => {
-            console.log('Timed out, going to sleep');
-            this.awake = false;
-            if (this.activeSkill) {
-              this.endSession(this.activeSkill);
-            }
-            this.restartSTT(true);
-          }, this.wakeTime);
-        }
-        if (commandExecuted || Date.now() - this.speechMatchTime > 1500) {
+          this.wakeUp(justWakeWord ? onwake : null);
+        } else if (Date.now() - this.speechMatchTime > 1500) {
           this.restartSTT(true);
         }
       }
