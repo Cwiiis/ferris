@@ -620,21 +620,21 @@ buildGrammar: function() {
 
   // Build the public rule
   // Add wake word
-  grammar += '\npublic <ferris.input> = ';
-  var wakeWord = '';
+  grammar += '\npublic <ferris.input> = ( ';
+  var usingWakeWord = false;
   if (!this.awake && (this.wakeWord && this.wakeWord.length > 0)) {
     if (!this.decoder.lookupWord(this.wakeWord)) {
       console.warn('Wake word \'' + this.wakeWord +
                    '\' not present in dictionary, disabling wake word');
       this.wakeWord = '';
     } else {
-      grammar += `${this.wakeWord} | `;
-      wakeWord = this.wakeWord + ' ';
+      grammar += `${this.wakeWord} | ( ${this.wakeWord} ( `;
+      usingWakeWord = true;
     }
   }
 
   // Add commands
-  grammar += `${wakeWord}<ferris.command> | ${wakeWord}<ferris.launcher>`;
+  grammar += `<ferris.command> | <ferris.launcher>`;
   for (var skill of this.skills) {
     for (var intentName in skill.intents) {
       var intent = skill.intents[intentName];
@@ -645,10 +645,14 @@ buildGrammar: function() {
         continue;
       }
 
-      grammar += ` | ${wakeWord}<${skill.name}.${intentName}>`;
+      grammar += ` | <${skill.name}.${intentName}>`;
     }
   }
-  grammar += ' ;\n';
+
+  if (usingWakeWord) {
+    grammar += ' ) )';
+  }
+  grammar += ' ) <sil> ;\n';
 
   return grammar;
 },
