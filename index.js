@@ -21,13 +21,14 @@ sessionAttributes: {},
 // Speech synthesis properties
 speechCommand: { name: 'espeak', args: ['-m'] },
 speechProcess: null,
+listenWhileSpeaking: false,
 
 // Words not in the pocketsphinx dictionary that we've warned on the console
 warnWords: {},
 
 // Wake-word variables
 wakeWord: 'ferris',
-wakeTime: 5000,
+wakeTime: 10000,
 wakeTimeout: null,
 awake: false,
 
@@ -512,12 +513,27 @@ lookupWords: function(string, decoder) {
 buildGrammar: function() {
   var grammar = '#JSGF V1.0;\ngrammar ferris;\n\n';
 
-  // TODO: Add grammar for built-in slots
-
   // Add grammar for built-in commands
   grammar += this.enableBuiltins ?
-    '<ferris.command> = exit | quit | help | list | grammar | stop ;\n' :
-    '<ferris.command> = help | stop ;\n';
+    '<ferris.command> = exit | quit | help | list | grammar | stop ;\n\n' :
+    '<ferris.command> = help | stop ;\n\n';
+
+  // Add grammar for built-in slots
+  grammar +=
+    '<ferris.dateDaySingle> = first | second | third | fourth | fifth | ' +
+    'sixth | seventh | eighth | ninth ;\n';
+  grammar +=
+    '<ferris.dateDay> = <ferris.dateDaySingle> | tenth | eleventh | ' +
+    'twelfth | thirteenth | fourteenth | fifteenth | sixteenth | ' +
+    'seventeenth | eighteenth | nineteenth | twentieth | ' +
+    '( twenty <ferris.dateDaySingle> ) | thirtieth | ( thirty first ) ;\n';
+  grammar +=
+    '<ferris.dateMonth> = january | february | march | april | may | june | ' +
+    'july | august | september | october | november | december ;\n';
+  grammar +=
+    '<AMAZON.DATE> = ' +
+    '( [ the ] <ferris.dateDay> [ of ] <ferris.dateMonth> ) | ' +
+    '( <ferris.dateMonth> [ the ] <ferris.dateDay> ) ;\n\n';
 
   // Add grammar for launching skills
   var foundSkill = false;
@@ -538,10 +554,10 @@ buildGrammar: function() {
 
   // Add grammar for given array of skills
   for (var skill of this.skills) {
-    grammar += '\n';
 
     // Add grammar for custom slots
     if (skill.customSlots) {
+      var firstSlot = true;
       for (var slotName in skill.customSlots) {
         if (skill.customSlots[slotName].length <= 0) {
           continue;
@@ -561,6 +577,10 @@ buildGrammar: function() {
           foundSlot = true;
         }
         if (foundSlot) {
+          if (firstSlot) {
+            grammar += '\n';
+            firstSlot = false;
+          }
           grammar += slotGrammar.slice(0, -2) + ';\n';
         }
       }
@@ -581,8 +601,13 @@ buildGrammar: function() {
         intentGrammar = utterance;
 
         for (var slotName in intent.slots) {
-          intentGrammar = intentGrammar.replace(new RegExp(`{${slotName}}`),
-            `<${skill.name}.${intent.slots[slotName]}>`);
+          if (intent.slots[slotName].startsWith('AMAZON.')) {
+            intentGrammar = intentGrammar.replace(new RegExp(`{${slotName}}`),
+              `<${intent.slots[slotName]}>`);
+          } else {
+            intentGrammar = intentGrammar.replace(new RegExp(`{${slotName}}`),
+              `<${skill.name}.${intent.slots[slotName]}>`);
+          }
         }
 
         // Normalise the parts of the string between slots
@@ -593,11 +618,13 @@ buildGrammar: function() {
         for (var word of split) {
           word = this.normaliseString(word);
 
-          if (!this.lookupWords(word, this.decoder)) {
-            valid = false;
-          }
+          if (word.length > 0) {
+            if (!this.lookupWords(word, this.decoder)) {
+              valid = false;
+            }
 
-          normalised += `${word} `;
+            normalised += `${word} `;
+          }
 
           if (slots) {
             var slot = slots.shift();
@@ -612,7 +639,12 @@ buildGrammar: function() {
         }
 
         intentGrammar = normalised.slice(0, -1);
-        intentGrammars += `${intentGrammar} | `;
+
+        if (intentGrammar.length < 1) {
+          continue;
+        }
+
+        intentGrammars += `( ${intentGrammar} ) | `;
       }
       grammar += intentGrammars.slice(0, -2) + ';\n';
     }
@@ -634,11 +666,13 @@ buildGrammar: function() {
   }
 
   // Add commands
-  grammar += `<ferris.command> | <ferris.launcher>`;
+  grammar += this.activeSkill ?
+    `<ferris.command>` :
+    `<ferris.command> | <ferris.launcher>`;
   for (var skill of this.skills) {
     for (var intentName in skill.intents) {
       var intent = skill.intents[intentName];
-      if (skill !== this.activeSkill && !intent.persist) {
+      if (skill !== this.activeSkill && (this.activeSkill || !intent.persist)) {
         continue;
       }
       if (!intent.utterances || intent.utterances.length <= 0) {
@@ -652,7 +686,7 @@ buildGrammar: function() {
   if (usingWakeWord) {
     grammar += ' ) )';
   }
-  grammar += ' ) <sil> ;\n';
+  grammar += ' ) ;\n';
 
   return grammar;
 },
@@ -848,8 +882,8 @@ listen: function(onwake, onexit) {
         if (Date.now() - this.speechMatchTime > 1500) {
           /*console.log(`Silence detected (${this.noiseLevel.average}), ` +
                       `restarting STT`);*/
-          if (!this.awake && this.speechMatch &&
-              this.speechMatch.hypstr.startsWith(this.wakeWord + ' ')) {
+          if (this.awake || (!this.awake && this.speechMatch &&
+              this.speechMatch.hypstr.startsWith(this.wakeWord + ' '))) {
             this.wakeUp(onwake);
           } else {
             this.restartSTT(false);
@@ -886,9 +920,16 @@ listen: function(onwake, onexit) {
     };
 
     stream.on('data', data => {
-      // XXX: Quick dirty hack to stop listening during speech.
       if (this.speechProcess) {
-        return;
+        // XXX: Quick dirty hack to stop timeouts during speech
+        if (this.awake) {
+          this.wakeUp();
+        }
+
+        // XXX: Quick dirty hack to stop listening during speech.
+        if (!this.listenWhileSpeaking) {
+          return;
+        }
       }
 
       buffer.write(data);
