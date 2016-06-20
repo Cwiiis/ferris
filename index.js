@@ -225,6 +225,7 @@ endSession: function(skill) {
   delete skill.context;
   if (this.activeSkill === skill) {
     this.activeSkill = null;
+    this.sleep();
   }
 },
 
@@ -693,73 +694,70 @@ buildGrammar: function() {
 
 parseCommand: function(command, onexit) {
   command = this.normaliseString(command);
+  var noop = () => {};
 
   switch (command.replace(/ .*$/, '')) {
     case 'exit':
     case 'quit':
-      if (onexit) {
-        onexit();
-      }
-      break;
+      return onexit ? onexit : noop;
 
     case 'help':
     case 'list':
-      this.listSkills();
-      break;
+      return this.listSkills.bind(this);
 
     case 'launch':
-      var matched = false;
       for (var skill of this.skills) {
         var skillName = command.replace(/launch /, '');
         if (skillName === this.normaliseString(skill.name) ||
             skillName === this.normaliseCamelCase(skill.name)) {
-          if (this.activeSkill !== skill) {
-            if (this.activeSkill) {
-              this.endSession(this.activeSkill);
+          return () => {
+            if (this.activeSkill !== skill) {
+              if (this.activeSkill) {
+                this.endSession(this.activeSkill);
+              }
+              this.launch(skill);
+              if (skill.context) {
+                this.activeSkill = skill;
+              }
             }
-            this.launch(skill);
-            if (skill.context) {
-              this.activeSkill = skill;
-            }
-            matched = true;
-            break;
-          }
+          };
         }
-      }
-      if (!matched) {
-        return false;
       }
       break;
 
     case 'grammar':
-      console.log(this.buildGrammar());
-      break;
+      return () => {
+        console.log(this.buildGrammar());
+      };
 
     case 'stop':
-      if (this.activeSkill) {
-        this.endSession(this.activeSkill);
-      } else {
-        console.log('No active skill');
-      }
-      break;
+      return () => {
+        if (this.activeSkill) {
+          this.endSession(this.activeSkill);
+        } else {
+          console.log('No active skill');
+        }
+      };
 
     default:
       var testIntent = (skill, intentName) => {
         var result = this.matchIntent(skill, skill.intents[intentName],
                                       command);
         if (result) {
-          this.launch(skill, intentName, result);
-          if (skill.context) {
-            this.activeSkill = skill;
-          }
-          return true;
+          return () => {
+            this.launch(skill, intentName, result);
+            if (skill.context) {
+              this.activeSkill = skill;
+            }
+          };
         }
-        return false;
+        return null;
       }
       if (this.activeSkill) {
         for (var intentName in this.activeSkill.intents) {
-          if (testIntent(this.activeSkill, intentName)) {
-            return true;
+          var result = testIntent(this.activeSkill, intentName);
+          if (result) {
+            return result;
           }
         }
       }
@@ -768,15 +766,16 @@ parseCommand: function(command, onexit) {
           if (!skill.intents[intentName].persist) {
             continue;
           }
-          if (testIntent(skill, intentName)) {
-            return true;
+          var result = testIntent(skill, intentName);
+          if (result) {
+            return result;
           }
         }
       }
-      return false;
+      break;
   }
 
-  return true;
+  return null;
 },
 
 restartSTT: function(rebuildGrammar) {
@@ -797,29 +796,44 @@ restartSTT: function(rebuildGrammar) {
   this.decoder.startUtt();
 },
 
-wakeUp: function(onwake) {
+sleep: function() {
   if (!this.awake) {
-    console.log('Waking up');
-    this.awake = true;
-    onwake && onwake();
+    return;
   }
 
+  console.log('Going to sleep');
+
+  if (this.wakeTimeout) {
+    clearTimeout(this.wakeTimeout);
+    this.wakeTimeout = null;
+  }
+
+  this.awake = false;
+  this.wakeTimeout = null;
+  if (this.activeSkill) {
+    this.endSession(this.activeSkill);
+  }
+  this.restartSTT(true);
+},
+
+wakeUp: function(onwake) {
   if (this.wakeTimeout) {
     clearTimeout(this.wakeTimeout);
   }
 
   // Timeout the current active skill / require the wake-word again
   this.wakeTimeout = setTimeout(() => {
-    console.log('Timed out, going to sleep');
-    this.awake = false;
+    console.log('Timed out');
     this.wakeTimeout = null;
-    if (this.activeSkill) {
-      this.endSession(this.activeSkill);
-    }
-    this.restartSTT(true);
+    this.sleep();
   }, this.wakeTime);
 
-  this.restartSTT(true);
+  if (!this.awake) {
+    console.log('Waking up');
+    this.awake = true;
+    onwake && onwake();
+    this.restartSTT(true);
+  }
 },
 
 listen: function(onwake, onexit) {
@@ -859,6 +873,8 @@ listen: function(onwake, onexit) {
     var stream = this.mic.getAudioStream();
 
     var decode = data => {
+      var now = Date.now();
+
       // Calculate noise level
       var sum = 0;
       for (var i = 0; i < data.length; i+= 2) {
@@ -872,49 +888,68 @@ listen: function(onwake, onexit) {
       // Pass data to decoder
       this.decoder.processRaw(data, false, false);
       var hyp = this.decoder.hyp();
+      var newMatch = false;
       if (hyp && (Math.abs(hyp.bestScore) < this.matchThreshold) &&
           (!this.speechMatch || hyp.hypstr !== this.speechMatch.hypstr)) {
-        this.speechMatchTime = Date.now();
+        this.speechMatchTime = now;
+        if (this.speechMatch) {
+          hyp.command = this.speechMatch.command;
+        }
         this.speechMatch = hyp;
+        newMatch = true;
       }
 
-      if (!this.speechMatch || this.noiseLevel.average <= this.noiseThreshold) {
-        if (Date.now() - this.speechMatchTime > 1500) {
-          /*console.log(`Silence detected (${this.noiseLevel.average}), ` +
-                      `restarting STT`);*/
-          if (this.awake || (!this.awake && this.speechMatch &&
-              this.speechMatch.hypstr.startsWith(this.wakeWord + ' '))) {
-            this.wakeUp(onwake);
-          } else {
-            this.restartSTT(false);
-          }
-        } else {
-          /*console.log(`Silence detected (${this.noiseLevel.average}) ` +
-                      `over a short period`);*/
-        }
-      } else if (Date.now() - this.speechMatchTime > 750) {
+      if (!this.speechMatch && (now - this.speechMatchTime > 1500)) {
+        // If we've gone over 1.5s without recognising anything, restart
+        // speech processing.
+        this.restartSTT(false);
+      } else if (newMatch && this.noiseLevel.average > this.noiseThreshold) {
+        // If we have a new speech match and the noise level is over the
+        // threshold, see if it can be parsed into a command and store it.
         console.log(`Detected '${this.speechMatch.hypstr}' ` +
                     `(${this.speechMatch.bestScore}), ` +
                     `average noise: ${this.noiseLevel.average}`);
-        var commandExecuted = false;
-        var justWakeWord = false;
+        var command = null;
 
         if (!this.awake && this.wakeWord && this.wakeWord.length > 0) {
           var wakeWord = this.wakeWord + ' ';
           if (this.speechMatch.hypstr === this.wakeWord) {
-            commandExecuted = true;
-            justWakeWord = true;
+            command = () => {
+              this.wakeUp(onwake);
+            };
           } else if (this.speechMatch.hypstr.startsWith(wakeWord)) {
             var speechMatch = this.speechMatch.hypstr.replace(wakeWord, '');
-            commandExecuted = this.parseCommand(speechMatch, onexit);
+            command = this.parseCommand(speechMatch, onexit);
           }
         } else {
-          commandExecuted = this.parseCommand(this.speechMatch.hypstr, onexit);
+          command = this.parseCommand(this.speechMatch.hypstr, onexit);
         }
-        if (commandExecuted) {
-          this.wakeUp(justWakeWord ? onwake : null);
-        } else if (Date.now() - this.speechMatchTime > 1500) {
-          this.restartSTT(true);
+
+        if (command) {
+          this.speechMatch.command = command;
+          if (this.awake) {
+            this.wakeUp();
+          }
+        }
+      } else if (this.speechMatch && this.speechMatch.command &&
+                 now - this.speechMatchTime > 750) {
+        // If we successfully parsed a command and it hasn't changed in 750ms,
+        // execute it and restart recognition.
+        this.speechMatch.command();
+        if (this.activeSkill) {
+          this.wakeUp();
+        }
+        this.restartSTT(false);
+      } else if (this.speechMatch &&
+                 now - this.speechMatchTime > 1500) {
+        // If 1.5s has passed and we got a speech match, but couldn't parse it
+        // into a command, check if it starts with the wake word and wake up,
+        // or just restart speech recognition without rebuilding the grammar.
+        if (!this.awake &&
+            this.speechMatch.hypstr.startsWith(this.wakeWord + ' ')) {
+          this.wakeUp(onwake);
+        } else {
+          this.restartSTT(false);
         }
       }
     };
