@@ -1,11 +1,10 @@
-const Concat = require('concat-stream');
 const ChildProcess = require('child_process');
 const Fs = require('fs');
-const Mic = require('mic');
 const Nlp = require('nlp_compromise');
 const Path = require('path');
-const PocketSphinx = require('pocketsphinx').ps;
-const Which = require('which');
+const Wakeword = require('wakeword');
+
+Wakeword.logFile = '/dev/null';
 
 module.exports = {
 
@@ -37,7 +36,6 @@ enableBuiltins: true,
 
 // Speech input properties
 decoder: null,
-mic: null,
 speechMatch: null,
 speechMatchTime: 0,
 speechSampleTime: 0,
@@ -652,19 +650,7 @@ buildGrammar: function() {
   }
 
   // Build the public rule
-  // Add wake word
   grammar += '\npublic <ferris.input> = ( ';
-  var usingWakeWord = false;
-  if (!this.awake && (this.wakeWord && this.wakeWord.length > 0)) {
-    if (!this.decoder.lookupWord(this.wakeWord)) {
-      console.warn('Wake word \'' + this.wakeWord +
-                   '\' not present in dictionary, disabling wake word');
-      this.wakeWord = '';
-    } else {
-      grammar += `${this.wakeWord} | ( ${this.wakeWord} ( `;
-      usingWakeWord = true;
-    }
-  }
 
   // Add commands
   grammar += this.activeSkill ?
@@ -684,9 +670,6 @@ buildGrammar: function() {
     }
   }
 
-  if (usingWakeWord) {
-    grammar += ' ) )';
-  }
   grammar += ' ) ;\n';
 
   return grammar;
@@ -797,7 +780,7 @@ restartSTT: function(rebuildGrammar) {
 },
 
 sleep: function() {
-  if (!this.awake) {
+  if (!this.awake || !this.wakeWord || this.wakeWord.length <= 0) {
     return;
   }
 
@@ -813,20 +796,26 @@ sleep: function() {
   if (this.activeSkill) {
     this.endSession(this.activeSkill);
   }
-  this.restartSTT(true);
+
+  this.decoder.endUtt();
+  this.decoder.setSearch('wakeword');
+  Wakeword.resume();
 },
 
 wakeUp: function(onwake) {
   if (this.wakeTimeout) {
     clearTimeout(this.wakeTimeout);
+    this.wakeTimeout = null;
   }
 
   // Timeout the current active skill / require the wake-word again
-  this.wakeTimeout = setTimeout(() => {
-    console.log('Timed out');
-    this.wakeTimeout = null;
-    this.sleep();
-  }, this.wakeTime);
+  if (this.wakeWord && this.wakeWord.length) {
+    this.wakeTimeout = setTimeout(() => {
+      console.log('Timed out');
+      this.wakeTimeout = null;
+      this.sleep();
+    }, this.wakeTime);
+  }
 
   if (!this.awake) {
     console.log('Waking up');
@@ -837,149 +826,94 @@ wakeUp: function(onwake) {
 },
 
 listen: function(onwake, onexit) {
-  // Not happy about needing to do this. Running pocketsphinx from the
-  // command-line finds the default models automatically.
-  Which('pocketsphinx_continuous', (e, path) => {
-    if (e) {
-      console.error('Error searching for pocketsphinx', e);
-      return;
+  var decode = data => {
+    if (this.speechProcess) {
+      // XXX: Quick dirty hack to stop timeouts during speech
+      if (this.awake) {
+        this.wakeUp();
+      }
+
+      // XXX: Quick dirty hack to stop listening during speech.
+      if (!this.listenWhileSpeaking) {
+        return;
+      }
     }
 
-    path = Path.join(Path.dirname(path), '..', 'share',
-                     'pocketsphinx', 'model', 'en-us');
-    if (!Fs.statSync(path).isDirectory()) {
-      console.error('Pocketsphinx en-us model not found at ' + path);
-      return;
+    var now = Date.now();
+
+    // Calculate noise level
+    var sum = 0;
+    for (var i = 0; i < data.length; i+= 2) {
+      sum += Math.abs(data.readInt16LE(i));
+    }
+    this.noiseLevel.average =
+      ((this.noiseLevel.average * this.noiseLevel.samples) + sum) /
+      (this.noiseLevel.samples + data.length / 2);
+    this.noiseLevel.samples += data.length / 2;
+
+    // Pass data to decoder
+    this.decoder.processRaw(data, false, false);
+    var hyp = this.decoder.hyp();
+    var newMatch = false;
+    if (hyp && (Math.abs(hyp.bestScore) < this.matchThreshold) &&
+        (!this.speechMatch || hyp.hypstr !== this.speechMatch.hypstr)) {
+      this.speechMatchTime = now;
+      if (this.speechMatch) {
+        hyp.command = this.speechMatch.command;
+      }
+      this.speechMatch = hyp;
+      newMatch = true;
     }
 
-    var config = PocketSphinx.Decoder.defaultConfig();
-    config.setString("-hmm", Path.join(path, 'en-us'));
-    config.setString("-dict", Path.join(path, 'cmudict-en-us.dict'));
-    config.setString("-lm", Path.join(path, 'en-us.lm.bin'));
-    config.setString('-logfn', '/dev/null');
+    if (!this.speechMatch && (now - this.speechMatchTime > 1500)) {
+      // If we've gone over 1.5s without recognising anything, restart
+      // speech processing.
+      this.restartSTT(false);
+    } else if (newMatch && this.noiseLevel.average > this.noiseThreshold) {
+      // If we have a new speech match and the noise level is over the
+      // threshold, see if it can be parsed into a command and store it.
+      console.log(`Detected '${this.speechMatch.hypstr}' ` +
+                  `(${this.speechMatch.bestScore}), ` +
+                  `average noise: ${this.noiseLevel.average}`);
 
-    this.decoder = new PocketSphinx.Decoder(config);
-    this.decoder.startUtt();
-    this.restartSTT(true);
-
-    // Setup microphone and start streaming to the decoder
-    this.mic = Mic(
-      { rate: '16000',
-        channels: '1',
-        encoding: 'signed-integer',
-        device: 'default' });
-
-    var buffer = Concat(decode);
-    var stream = this.mic.getAudioStream();
-
-    var decode = data => {
-      var now = Date.now();
-
-      // Calculate noise level
-      var sum = 0;
-      for (var i = 0; i < data.length; i+= 2) {
-        sum += Math.abs(data.readInt16LE(i));
+      var command = this.parseCommand(this.speechMatch.hypstr, onexit);
+      if (command) {
+        this.speechMatch.command = command;
+        this.wakeUp();
       }
-      this.noiseLevel.average =
-        ((this.noiseLevel.average * this.noiseLevel.samples) + sum) /
-        (this.noiseLevel.samples + data.length / 2);
-      this.noiseLevel.samples += data.length / 2;
-
-      // Pass data to decoder
-      this.decoder.processRaw(data, false, false);
-      var hyp = this.decoder.hyp();
-      var newMatch = false;
-      if (hyp && (Math.abs(hyp.bestScore) < this.matchThreshold) &&
-          (!this.speechMatch || hyp.hypstr !== this.speechMatch.hypstr)) {
-        this.speechMatchTime = now;
-        if (this.speechMatch) {
-          hyp.command = this.speechMatch.command;
-        }
-        this.speechMatch = hyp;
-        newMatch = true;
+    } else if (this.speechMatch && this.speechMatch.command &&
+               now - this.speechMatchTime > 750) {
+      // If we successfully parsed a command and it hasn't changed in 750ms,
+      // execute it and restart recognition.
+      this.speechMatch.command();
+      if (this.activeSkill) {
+        this.wakeUp();
       }
+      this.restartSTT(false);
+    } else if (this.speechMatch &&
+               now - this.speechMatchTime > 1500) {
+      // If 1.5s has passed and we got a speech match, but couldn't parse it
+      // into a command,restart speech recognition without rebuilding the
+      // grammar.
+      this.restartSTT(false);
+    }
+  };
 
-      if (!this.speechMatch && (now - this.speechMatchTime > 1500)) {
-        // If we've gone over 1.5s without recognising anything, restart
-        // speech processing.
-        this.restartSTT(false);
-      } else if (newMatch && this.noiseLevel.average > this.noiseThreshold) {
-        // If we have a new speech match and the noise level is over the
-        // threshold, see if it can be parsed into a command and store it.
-        console.log(`Detected '${this.speechMatch.hypstr}' ` +
-                    `(${this.speechMatch.bestScore}), ` +
-                    `average noise: ${this.noiseLevel.average}`);
-        var command = null;
+  var recordCallback = (data) => {
+    if (!this.awake) {
+      this.decoder = Wakeword.decoder;
+      this.decoder.startUtt();
+      this.wakeUp();
+    }
 
-        if (!this.awake && this.wakeWord && this.wakeWord.length > 0) {
-          var wakeWord = this.wakeWord + ' ';
-          if (this.speechMatch.hypstr === this.wakeWord) {
-            command = () => {
-              this.wakeUp(onwake);
-            };
-          } else if (this.speechMatch.hypstr.startsWith(wakeWord)) {
-            var speechMatch = this.speechMatch.hypstr.replace(wakeWord, '');
-            command = this.parseCommand(speechMatch, onexit);
-          }
-        } else {
-          command = this.parseCommand(this.speechMatch.hypstr, onexit);
-        }
+    decode(data);
+  };
 
-        if (command) {
-          this.speechMatch.command = command;
-          if (this.awake) {
-            this.wakeUp();
-          }
-        }
-      } else if (this.speechMatch && this.speechMatch.command &&
-                 now - this.speechMatchTime > 750) {
-        // If we successfully parsed a command and it hasn't changed in 750ms,
-        // execute it and restart recognition.
-        this.speechMatch.command();
-        if (this.activeSkill) {
-          this.wakeUp();
-        }
-        this.restartSTT(false);
-      } else if (this.speechMatch &&
-                 now - this.speechMatchTime > 1500) {
-        // If 1.5s has passed and we got a speech match, but couldn't parse it
-        // into a command, check if it starts with the wake word and wake up,
-        // or just restart speech recognition without rebuilding the grammar.
-        if (!this.awake &&
-            this.speechMatch.hypstr.startsWith(this.wakeWord + ' ')) {
-          this.wakeUp(onwake);
-        } else {
-          this.restartSTT(false);
-        }
-      }
-    };
-
-    stream.on('data', data => {
-      if (this.speechProcess) {
-        // XXX: Quick dirty hack to stop timeouts during speech
-        if (this.awake) {
-          this.wakeUp();
-        }
-
-        // XXX: Quick dirty hack to stop listening during speech.
-        if (!this.listenWhileSpeaking) {
-          return;
-        }
-      }
-
-      buffer.write(data);
-      if (Date.now() - this.speechSampleTime > 300) {
-        buffer.end();
-        this.speechSampleTime = Date.now();
-        buffer = Concat(decode);
-      }
-    });
-    stream.on('error', e => {
-      console.error('Error streaming from microphone', e);
-    });
-
-    this.mic.start();
-  });
+  if (this.wakeWord && this.wakeWord.length > 0) {
+    Wakeword.listen([this.wakeWord], 0.87, recordCallback);
+  } else {
+    Wakeword.record(recordCallback);
+  }
 }
 };
 

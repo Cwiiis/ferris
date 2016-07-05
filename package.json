@@ -14,10 +14,7 @@
   },
   "main": "index.js",
   "dependencies": {
-    "concat-stream": "1.5.1",
-    "mic": "2.0.1",
     "nlp_compromise": "6.2.0",
-    "pocketsphinx": "5.0.5",
-    "which": "1.2.9"
+    "wakeword": "https://gitlab.com/Cwiiis/wakeword.git"
   }
 }
