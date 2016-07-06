@@ -14,7 +14,7 @@
   },
   "main": "index.js",
   "dependencies": {
-    "nlp_compromise": "6.2.0",
+    "nlp_compromise": "6.4.6",
     "wakeword": "https://gitlab.com/Cwiiis/wakeword.git"
   }
 }

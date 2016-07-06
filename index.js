@@ -339,10 +339,29 @@ matchSlot: function(skill, intent, slotName, text) {
           return dateString;
 
         case 'AMAZON.DURATION':
-          // TODO: nlp doesn't have a 'duration' concept, see about adding it.
+          // TODO: nlp will detect time values as dates, but then not fill
+          //       out any data about them. This forces us to use value, but
+          //       then it can't handle multiple values
+          //       (e.g. "5 hours 10 minutes").
+          var value = Nlp.value(text);
+          switch (value.unit_name) {
+          case 'year':
+            return `P${value.number}Y`;
+          case 'week':
+            return `P${value.number}W`;
+          case 'day':
+            return `P${value.number}D`;
+          case 'hour':
+            return `PT${value.number}H`;
+          case 'minute':
+            return `PT${value.number}M`;
+          case 'second':
+            return `PT${value.number}S`;
+          }
           break;
 
         case 'AMAZON.FOUR_DIGIT_NUMBER':
+          // TODO: nlp can't handle 'four digit' numbers.
           break;
 
         case 'AMAZON.NUMBER':
@@ -518,6 +537,8 @@ buildGrammar: function() {
     '<ferris.command> = help | stop ;\n\n';
 
   // Add grammar for built-in slots
+
+  // AMAZON.DATE
   grammar +=
     '<ferris.dateDaySingle> = first | second | third | fourth | fifth | ' +
     'sixth | seventh | eighth | ninth ;\n';
@@ -530,9 +551,53 @@ buildGrammar: function() {
     '<ferris.dateMonth> = january | february | march | april | may | june | ' +
     'july | august | september | october | november | december ;\n';
   grammar +=
-    '<AMAZON.DATE> = ' +
+    '\n<AMAZON.DATE> = ' +
     '( [ the ] <ferris.dateDay> [ of ] <ferris.dateMonth> ) | ' +
     '( <ferris.dateMonth> [ the ] <ferris.dateDay> ) ;\n\n';
+
+  // AMAZON.NUMBER, AMAZON.DURATION
+  grammar +=
+    '<ferris.zero> = zero | oh;\n';
+  grammar +=
+    '<ferris.numberSingle> = ' +
+    'one | two | three | four | five | six | seven | eight | nine;\n';
+  grammar +=
+    '<ferris.numberTensUnique> = ' +
+    'ten | eleven | twelve | thirteen | fourteen | fifteen | sixteen | ' +
+    'seventeen | eighteen | nineteen;\n';
+  grammar +=
+    '<ferris.numberTensCompound> = ' +
+    '( twenty | thirty | forty | fifty | sixty | seventy | eighty | ninety ) ' +
+    '[ <ferris.numberSingle> ];\n';
+  grammar +=
+    '<ferris.numberTens> = ' +
+    '<ferris.numberTensUnique> | <ferris.numberTensCompound>;\n';
+  grammar +=
+    '<ferris.numberHundreds> = ' +
+    '( a | <ferris.numberSingle> ) hundred [ [ and ] <ferris.numberTens> ];\n';
+  grammar +=
+    '<ferris.numberThousands> = ' +
+    '( a | <ferris.numberHundreds> | <ferris.numberTens> | ' +
+    '<ferris.numberSingle> ) thousand [ [ and ] <ferris.numberHundreds> ];\n';
+  grammar +=
+    '<ferris.numberMillions> = ' +
+    '( a | <ferris.numberThousands> | <ferris.numberHundreds> | ' +
+    '<ferris.numberTens> ) million [ <ferris.numberThousands> ];\n';
+
+  grammar +=
+    '<AMAZON.NUMBER> = ' +
+    '<ferris.zero> | <ferris.numberSingle> | <ferris.numberTens> | ' +
+    '<ferris.numberHundreds> | <ferris.numberThousands> | ' +
+    '<ferris.numberMillions>;\n\n';
+
+  grammar +=
+    '<ferris.timeUnits> = ' +
+    'second | seconds | minute | minutes | hour | hours | ' +
+    'day | days | week | weeks;\n'
+  grammar +=
+    '<AMAZON.DURATION> = ' +
+    '( ( ( a | <AMAZON.NUMBER> ) <ferris.timeUnits> ) [ and ] ) * ' +
+    '( a | <AMAZON.NUMBER> ) <ferris.timeUnits>;\n\n';
 
   // Add grammar for launching skills
   var foundSkill = false;
